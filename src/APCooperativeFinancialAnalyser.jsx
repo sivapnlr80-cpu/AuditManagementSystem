@@ -20,6 +20,12 @@ import {
   FileCheck2,
   BadgeCheck,
   Award,
+  MessagesSquare,
+  FilePlus2,
+  Send,
+  Trash2,
+  Bot,
+  User as UserIcon,
 } from 'lucide-react';
 import logoImage from './assets/logo.png';
 import epacsLogo from './assets/epacs.png';
@@ -122,6 +128,150 @@ const DOCUMENT_TYPES = [
   { key: 'soundnesscertificate', type: 'Soundness Certificate', hasFinancialTable: false },
   { key: 'auditratingandclassification', type: 'Audit Rating & Classification', hasFinancialTable: false },
 ];
+
+/* === AI Legal Chat — knowledge base =================================
+ * Keyword-driven responses grounded in the APCS Act 1964,
+ * APCS Rules 1964, NABARD norms, and the Audit Manual for PACS.
+ * ================================================================= */
+const LEGAL_KB = [
+  {
+    keys: ['section 50', 'sec 50', 's.50', 'audit of accounts'],
+    answer:
+      "Section 50 of the APCS Act, 1964 — Audit of Accounts. Empowers the Registrar to audit or cause the audit of the accounts of every Society at least once a year. Under sub-section (5), if the Managing Committee fails to place the audit report before the General Body within 30 days of receipt, members of the committee cease to hold office.",
+  },
+  {
+    keys: ['section 51', 'sec 51', 's.51', 'inquiry'],
+    answer:
+      'Section 51 of the APCS Act, 1964 — Inquiry into the Affairs of a Society. The Registrar may hold an inquiry into the constitution, working and financial condition of a Society on his own motion or on application by a financing bank or a prescribed proportion of members.',
+  },
+  {
+    keys: ['section 52', 'sec 52', 's.52', 'inspection'],
+    answer:
+      'Section 52 of the APCS Act, 1964 — Inspection of a Society. The Registrar or any officer authorised by him may inspect or cause the inspection of any society and its books and accounts.',
+  },
+  {
+    keys: ['section 54', 'sec 54', 's.54', 'rectification'],
+    answer:
+      "Section 54 of the APCS Act, 1964 — Rectification of Defects. The Registrar shall draw the attention of the Society to the defects noticed in every audit conducted under Section 50, inquiry under Section 51, or inspection under Section 52/53, and may make an order directing the Society or its officers to take such action and within such time as may be specified therein to remedy such defects.",
+  },
+  {
+    keys: ['section 55-a', 'section 55a', 'sec 55-a', 's.55-a', 'maintenance of accounts', 'books of account', 'rule 58', 'rule 59'],
+    answer:
+      'Section 55-A of the APCS Act, 1964 read with Rules 58 and 59 — Maintenance of Accounts and Books. The Chief Executive Officer and the President of every Society are jointly and severally responsible for keeping, maintaining, signing and authenticating the prescribed accounts and books, and for producing the same when called for in connection with audit, inquiry, inspection or election. Sub-section (2) empowers the Registrar to direct production where records are not maintained.',
+  },
+  {
+    keys: ['section 60', 'sec 60', 's.60', 'surcharge'],
+    answer:
+      'Section 60 of the APCS Act, 1964 — Surcharge. Empowers the Registrar, on application by the Society or otherwise, to surcharge any officer or former officer of the Society for any loss caused to the Society by negligence, misconduct, breach of trust, or misappropriation of funds/property of the Society.',
+  },
+  {
+    keys: ['section 71', 'sec 71', 's.71', 'recovery certificate'],
+    answer:
+      'Section 71 of the APCS Act, 1964 — Recovery Certificates. Provides for the Registrar to issue recovery certificates for sums due to a Society. The certificate is enforceable as if it were a decree of a civil court and may be executed through attachment and sale of the defaulting member’s movable / immovable property.',
+  },
+  {
+    keys: ['section 115-d', 'section 115d', 's.115-d', 's.115d', 'cost of management', 'staff cost ceiling', 'com ceiling'],
+    answer:
+      'Section 115-D of the APCS Act, 1964 read with NABARD norms — Cost of Management. Prescribes the eligibility ceilings on Cost of Management of PACS — Cost of Management at 50% of Total Income (Annexure-8) and Staff Cost at 30% of Total Income. Exceeding these ceilings exposes the Managing Committee to responsibility.',
+  },
+  {
+    keys: ['section 30', 'sec 30', 's.30', 'managing committee duties', 'general body'],
+    answer:
+      "Section 30 of the APCS Act, 1964 — Powers and duties of the Managing Committee. Sub-section (2) requires the annual accounts and audit report to be placed before the General Body read with Rule 22. Sub-section (xxii) casts a specific duty on the Managing Committee to conduct a periodical review of all overdue loans and defaulters of the Society.",
+  },
+  {
+    keys: ['rule 41', 'rule 41(c)', 'rule 41(c)(6)', '41(c)(6)', 'overdue debtors'],
+    answer:
+      'Rule 41(C)(6) of the APCS Rules, 1964 — Declaration of Overdue Debtors. Mandates the Society to declare overdue debtors once every quarter. Read with Section 30(xxii), the CEO must publish the overdue list every three months and place it before the Managing Committee for legal/recovery action.',
+  },
+  {
+    keys: ['rule 22', 'r.22'],
+    answer:
+      'Rule 22 of the APCS Rules, 1964 read with Section 30(2) — General Body discussion. Requires the audited annual accounts, audit report and the defaulters’ list to be placed before, and discussed by, the General Body within the prescribed timeline.',
+  },
+  {
+    keys: ['rule 58', 'rule 59'],
+    answer:
+      'Rules 58 and 59 of the APCS Rules, 1964 — Operationalize Section 55-A by prescribing the form of books and registers to be maintained, the manner of authentication, and the duty to produce them for audit/inquiry/inspection.',
+  },
+  {
+    keys: ['para 6.12', 'paragraph 6.12', '6.12.1', '6.12.2', '6.12.3'],
+    answer:
+      "Paragraph 6.12 of the Audit Manual for PACS — Audit Observations & Defect Reporting. Categorises defects into 6.12.1 Financial Irregularities (budget overruns, irregular loans, mis-recognised income, heavy cash retention, frauds), 6.12.2 Accounting Irregularities (registers not maintained, wrong postings, inadequate provisioning, NABARD norm breaches), and 6.12.3 Administrative Irregularities (delegation, GB/MC meetings, internal controls, housekeeping, prior-defect non-compliance).",
+  },
+  {
+    keys: ['para 7.1', 'paragraph 7.1', '7.1', 'computerised', 'computerized environment', 'erp accounting'],
+    answer:
+      'Paragraph 7.1 of the Audit Manual for PACS — Accounting and Record Keeping in a Computerised Environment. Requires the auditor to verify that financial statements (P&L, Balance Sheet, Trial Balance) are correctly generated for the full set of accounts, properly authenticated by the Secretary, and preserved in soft and hard form for at least 7 years.',
+  },
+  {
+    keys: ['para 7.4', 'paragraph 7.4', '7.4', 'password control'],
+    answer:
+      "Paragraph 7.4 of the Audit Manual for PACS — Password Controls. Passwords for taking backups, entering/updating operating systems, creating/editing master records, system shutdowns and rebooting should only be with the Secretary or System Administrator. Users must change passwords regularly and not share them.",
+  },
+  {
+    keys: ['para 7.5', 'paragraph 7.5', '7.5', 'interest rate control', 'interest controls'],
+    answer:
+      "Paragraph 7.5 of the Audit Manual for PACS — Key Transaction Controls / Interest Rates. The auditor must obtain interest rates keyed into the system and match them with rates prescribed by management; obtain the log of interest rate changes; ensure changes are duly authorized; test-check calculations; and verify reversals on interest defaults.",
+  },
+  {
+    keys: ['irac', 'income recognition', 'asset classification', 'provisioning norms', 'nabard prudential'],
+    answer:
+      "NABARD's IRAC Norms — Income Recognition, Asset Classification and Provisioning. Loans are classified as Standard, Sub-Standard, Doubtful or Loss based on overdue periods. Graded provisioning is required: Sub-Standard 10%, Doubtful 20-100% (sub-bucket basis), Loss 100%. Sundry Debtors aged > 3 years require 100% provision with no scope for realization.",
+  },
+  {
+    keys: ['annexure-5', 'annexure 5', 'imbalance'],
+    answer:
+      "Annexure-5 — Calculation of Imbalance. Formula: Imbalance = A − B, where A = Amounts Pending for Payment (Deposits + Borrowings) and B = Amounts Pending for Recovery (Loans & Advances + Term Deposits other than Reserve Funds). If B is greater than (or equal to) A, the Imbalance is treated as Nil. A positive imbalance indicates that payables exceed recoverables — a sign of financial weakness.",
+  },
+  {
+    keys: ['annexure-8', 'annexure 8', 'total income computation'],
+    answer:
+      "Annexure-8 — Computation of Total Income, Cost of Management and Staff Cost. Lists income heads (interest on loans, investments, trade income, other income), interest expenditure, and computes Total Income. Eligibility for Staff Cost is 30% of Total Income; for Cost of Management it is 50% of Total Income. A negative Total Income renders these ceilings inoperative.",
+  },
+  {
+    keys: ['annexure-11', 'annexure 11', 'legal action coverage'],
+    answer:
+      'Annexure-11 — Particulars of Legal Action Coverage on Loans and Advances. Captures outstanding loans, overdue loans, and the legal-action status: covered, decree issued & EPs filed, decree issued & EPs not filed, not covered. Read with Section 30(xxii) and Rule 41(C)(6), all uncovered overdues attract immediate legal action including Section 71 recovery certificates.',
+  },
+  {
+    keys: ['schedule-9', 'schedule 9', 'provisions', 'npa provisions'],
+    answer:
+      "Schedule-9 — Provisions. Records closing balances of provisions made for NPAs (Sub-Standard, Doubtful, Loss), Overdue Interest on Loans and Advances, Bad and Doubtful Sundry Debtors (Others), and Depreciation on Investments. Negative closing balances or zero NPA provisions breach NABARD IRAC norms and Section 55-A of the APCS Act.",
+  },
+  {
+    keys: ['schedule-16b', 'schedule 16b', 'sundry debtors'],
+    answer:
+      "Schedule-16B — Sundry Debtors. Records Sundry Debtors (Others) classified as: Due from below 1 year, Due from below 3 years, and Due from above 3 years (No scope for realisation - 100%). Aged debtors > 3 years require 100% provisioning, Section 71 recovery action where possible, and write-off resolution before the General Body for time-barred items.",
+  },
+  {
+    keys: ['hi', 'hello', 'hey', 'greetings'],
+    answer:
+      "Hello. I'm COOP·AUDIT·AI's legal assistant. Ask me about APCS Act 1964 sections, APCS Rules, NABARD norms, or Audit Manual for PACS paragraphs.",
+  },
+];
+
+function answerLegalQuery(query) {
+  if (!query || !query.trim())
+    return 'Please type a question about a specific Section, Rule, Annexure, Schedule, or Paragraph of the Audit Manual.';
+  const q = query.toLowerCase().trim();
+  // Exact-keyword match scoring
+  let best = null;
+  let bestScore = 0;
+  for (const entry of LEGAL_KB) {
+    for (const k of entry.keys) {
+      if (q.includes(k.toLowerCase())) {
+        const score = k.length; // longer keys get priority
+        if (score > bestScore) {
+          best = entry;
+          bestScore = score;
+        }
+      }
+    }
+  }
+  if (best) return best.answer;
+  return `I don't have a precise entry for that yet. Try asking about a specific Section (e.g. Section 50, 54, 55-A, 60, 71, 115-D), Rule (e.g. Rule 22, 41(C)(6), 58, 59), Annexure (5, 8, 11), Schedule (9, 16B), or Audit Manual paragraph (6.12, 7.1, 7.4, 7.5, IRAC norms).`;
+}
 
 function classifyDocument(fileName) {
   const norm = normalizeFileName(fileName);
@@ -269,6 +419,21 @@ export default function APCooperativeFinancialAnalyser() {
   );
   const [loanRecoveryIncludeMap, setLoanRecoveryIncludeMap] =
     useState({});
+  const [chatMessages, setChatMessages] = useState([
+    {
+      role: 'ai',
+      content:
+        "Welcome to COOP·AUDIT·AI Legal Chat. Ask me about any section of the APCS Act 1964, APCS Rules 1964, NABARD norms, or paragraphs of the Audit Manual for PACS. Try: 'What is Section 54?' or 'Explain Rule 41(C)(6)'.",
+    },
+  ]);
+  const [chatInput, setChatInput] = useState('');
+  const [chatTyping, setChatTyping] = useState(false);
+  const [customDefects, setCustomDefects] = useState([]);
+  const [customDefectDraft, setCustomDefectDraft] = useState({
+    category: 'financial',
+    title: '',
+    narrative: '',
+  });
 
   const financials = useMemo(() => {
     const normalizedDetected = detectedFiles.map(normalizeFileName);
@@ -609,6 +774,15 @@ export default function APCooperativeFinancialAnalyser() {
       });
     }
 
+    // 5h) Custom defects added via Defect Sheet Generator view
+    customDefects.forEach((d) => {
+      demerits.push({
+        category: d.category,
+        title: d.title,
+        narrative: d.narrative,
+      });
+    });
+
     // 6) STANDARD RECURRING DEMERITS (per Audit Manual & APCS Act)
 
     // 6-zero MERGED) AUDITOR'S SCOPE RESERVATION — Sections 50, 51, 52, 54, 55-A, 60 + Audit Manual
@@ -663,6 +837,7 @@ export default function APCooperativeFinancialAnalyser() {
     cashBookIncludeInDefects,
     loanRecoveryAnalyses,
     loanRecoveryIncludeMap,
+    customDefects,
   ]);
 
   const documentRows = useMemo(() => {
@@ -3643,6 +3818,52 @@ tr.overdue { background: #fff0f0; }
     w.document.close();
   }
 
+  function sendChatMessage() {
+    const text = chatInput.trim();
+    if (!text) return;
+    setChatMessages((prev) => [
+      ...prev,
+      { role: 'user', content: text },
+    ]);
+    setChatInput('');
+    setChatTyping(true);
+    // Simulate brief processing delay so the typing indicator shows
+    setTimeout(() => {
+      const reply = answerLegalQuery(text);
+      setChatMessages((prev) => [
+        ...prev,
+        { role: 'ai', content: reply },
+      ]);
+      setChatTyping(false);
+    }, 400);
+  }
+
+  function addCustomDefect() {
+    const { category, title, narrative } = customDefectDraft;
+    if (!title.trim() || !narrative.trim()) {
+      alert('Please provide both a Title and a Narrative.');
+      return;
+    }
+    setCustomDefects((prev) => [
+      ...prev,
+      {
+        category,
+        title: title.trim(),
+        narrative: narrative.trim(),
+        custom: true,
+      },
+    ]);
+    setCustomDefectDraft({
+      category: 'financial',
+      title: '',
+      narrative: '',
+    });
+  }
+
+  function removeCustomDefect(idx) {
+    setCustomDefects((prev) => prev.filter((_, i) => i !== idx));
+  }
+
   function printDefectSheet() {
     if (
       defectSheet.merits.length === 0 &&
@@ -3956,6 +4177,8 @@ tr.overdue { background: #fff0f0; }
             ['Upload Documents', Upload, 'cyan', 'documents'],
             ['Report Analysis', FileCheck2, 'amber', 'reports'],
             ['Audit Defects', ScrollText, 'violet', 'defects'],
+            ['AI Legal Chat', MessagesSquare, 'fuchsia', 'aichat'],
+            ['Defect Sheet Generator', FilePlus2, 'lime', 'generator'],
           ].map(([label, Icon, accent, view], idx) => {
             const isActive = activeView === view;
             return (
@@ -5447,6 +5670,386 @@ tr.overdue { background: #fff0f0; }
                         </div>
                       ))}
                     </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* === AI LEGAL CHAT VIEW === */}
+          {activeView === 'aichat' && !loading && (
+            <div className="relative overflow-hidden rounded-[28px] border border-white/15 bg-slate-950/60 backdrop-blur-2xl shadow-[0_0_60px_rgba(217,70,239,0.15)] anim-slide-up">
+              <div className="absolute inset-0 cyber-grid opacity-30 pointer-events-none" />
+              <div className="absolute top-0 left-0 right-0 h-px bg-gradient-to-r from-transparent via-fuchsia-400/60 to-transparent" />
+
+              <div className="relative px-6 py-5 border-b border-white/10 bg-gradient-to-r from-fuchsia-500/10 via-violet-500/10 to-pink-500/10 flex items-center justify-between gap-4">
+                <div className="flex items-center gap-3">
+                  <div className="relative">
+                    <div className="absolute inset-0 bg-fuchsia-400 blur-xl opacity-60 animate-pulse" />
+                    <div className="relative w-11 h-11 rounded-xl bg-gradient-to-br from-fuchsia-400 via-pink-400 to-violet-400 flex items-center justify-center shadow-[0_0_25px_rgba(217,70,239,0.5)]">
+                      <Bot
+                        className="w-6 h-6 text-slate-950"
+                        strokeWidth={2.5}
+                      />
+                    </div>
+                  </div>
+                  <div>
+                    <div className="text-[10px] uppercase tracking-[0.4em] text-fuchsia-300/80 font-mono-techy font-bold">
+                      APCS Act · Rules · NABARD · Audit Manual
+                    </div>
+                    <h3 className="font-display text-lg lg:text-xl font-black tracking-[0.15em] gradient-text-fire">
+                      AI LEGAL CHAT
+                    </h3>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() =>
+                    setChatMessages([
+                      {
+                        role: 'ai',
+                        content:
+                          "Chat cleared. Ask me about any section, rule, or paragraph of the APCS Act/Rules/Audit Manual.",
+                      },
+                    ])
+                  }
+                  className="px-3 py-1.5 rounded-lg border border-white/15 bg-white/5 hover:bg-white/10 text-[10px] uppercase tracking-[0.2em] font-mono-techy font-bold text-cyan-200/80 transition-colors"
+                >
+                  Clear
+                </button>
+              </div>
+
+              <div
+                className="relative p-5 space-y-4 max-h-[55vh] overflow-y-auto"
+                style={{ scrollbarGutter: 'stable' }}
+              >
+                {chatMessages.map((m, idx) => (
+                  <div
+                    key={idx}
+                    className={`flex items-start gap-3 anim-slide-up ${m.role === 'user' ? 'flex-row-reverse' : ''}`}
+                    style={{ animationDelay: `${idx * 0.05}s` }}
+                  >
+                    <div
+                      className={`shrink-0 w-8 h-8 rounded-lg flex items-center justify-center ${
+                        m.role === 'user'
+                          ? 'bg-cyan-500/20 border border-cyan-400/40'
+                          : 'bg-fuchsia-500/20 border border-fuchsia-400/40'
+                      }`}
+                    >
+                      {m.role === 'user' ? (
+                        <UserIcon
+                          className="w-4 h-4 text-cyan-300"
+                          strokeWidth={2.5}
+                        />
+                      ) : (
+                        <Bot
+                          className="w-4 h-4 text-fuchsia-300"
+                          strokeWidth={2.5}
+                        />
+                      )}
+                    </div>
+                    <div
+                      className={`max-w-[80%] rounded-2xl px-4 py-3 text-[13px] leading-relaxed border ${
+                        m.role === 'user'
+                          ? 'bg-cyan-500/10 border-cyan-400/30 text-cyan-50/95'
+                          : 'bg-slate-900/60 border-white/15 text-white/90'
+                      }`}
+                    >
+                      {m.content}
+                    </div>
+                  </div>
+                ))}
+                {chatTyping && (
+                  <div className="flex items-start gap-3">
+                    <div className="shrink-0 w-8 h-8 rounded-lg flex items-center justify-center bg-fuchsia-500/20 border border-fuchsia-400/40">
+                      <Bot
+                        className="w-4 h-4 text-fuchsia-300"
+                        strokeWidth={2.5}
+                      />
+                    </div>
+                    <div className="rounded-2xl px-4 py-3 bg-slate-900/60 border border-white/15 text-white/60 italic text-[12px]">
+                      Looking up the law…
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              <div className="relative border-t border-white/10 p-4 bg-slate-900/40">
+                <form
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    const q = chatInput.trim();
+                    if (!q) return;
+                    setChatMessages((prev) => [
+                      ...prev,
+                      { role: 'user', content: q },
+                    ]);
+                    setChatInput('');
+                    setChatTyping(true);
+                    setTimeout(() => {
+                      setChatMessages((prev) => [
+                        ...prev,
+                        {
+                          role: 'ai',
+                          content: answerLegalQuery(q),
+                        },
+                      ]);
+                      setChatTyping(false);
+                    }, 380);
+                  }}
+                  className="flex items-center gap-2"
+                >
+                  <input
+                    type="text"
+                    value={chatInput}
+                    onChange={(e) => setChatInput(e.target.value)}
+                    placeholder="Ask about Section 50, Rule 41(C)(6), Para 7.5, Annexure-8…"
+                    className="flex-1 bg-slate-950/70 border border-white/15 rounded-xl px-4 py-3 text-sm text-white placeholder:text-cyan-200/40 focus:outline-none focus:border-fuchsia-400/60 focus:ring-2 focus:ring-fuchsia-400/20"
+                  />
+                  <button
+                    type="submit"
+                    disabled={chatTyping || !chatInput.trim()}
+                    className="group relative shrink-0 disabled:opacity-40"
+                  >
+                    <span className="absolute -inset-0.5 bg-gradient-to-r from-fuchsia-400 via-pink-400 to-violet-400 rounded-xl blur opacity-50 group-hover:opacity-80 transition-opacity" />
+                    <span className="relative inline-flex items-center gap-2 px-5 py-3 rounded-xl bg-gradient-to-r from-fuchsia-500 via-pink-500 to-violet-500 text-white font-display tracking-[0.18em] uppercase text-[11px] font-black">
+                      <Send className="w-4 h-4" strokeWidth={2.8} />
+                      Send
+                    </span>
+                  </button>
+                </form>
+                <div className="mt-3 flex flex-wrap gap-2 text-[10px]">
+                  {[
+                    'Section 50',
+                    'Section 55-A',
+                    'Section 71',
+                    'Section 115-D',
+                    'Rule 41(C)(6)',
+                    'Para 7.1',
+                    'Para 7.5',
+                    'IRAC norms',
+                  ].map((q) => (
+                    <button
+                      key={q}
+                      type="button"
+                      onClick={() => setChatInput(q)}
+                      className="px-2.5 py-1 rounded-full border border-white/10 bg-white/5 hover:bg-fuchsia-500/15 hover:border-fuchsia-400/40 text-cyan-200/70 hover:text-fuchsia-200 transition-colors uppercase tracking-[0.18em] font-mono-techy font-bold"
+                    >
+                      {q}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* === DEFECT SHEET GENERATOR VIEW === */}
+          {activeView === 'generator' && !loading && (
+            <div className="space-y-6 anim-slide-up">
+              <div className="relative overflow-hidden rounded-[28px] border border-white/15 bg-slate-950/60 backdrop-blur-2xl shadow-[0_0_60px_rgba(132,204,22,0.15)]">
+                <div className="absolute inset-0 cyber-grid opacity-30 pointer-events-none" />
+                <div className="absolute top-0 left-0 right-0 h-px bg-gradient-to-r from-transparent via-lime-400/60 to-transparent" />
+                <div className="relative px-6 py-5 border-b border-white/10 bg-gradient-to-r from-lime-500/10 via-emerald-500/10 to-cyan-500/10 flex items-center gap-3">
+                  <div className="relative">
+                    <div className="absolute inset-0 bg-lime-400 blur-xl opacity-60 animate-pulse" />
+                    <div className="relative w-11 h-11 rounded-xl bg-gradient-to-br from-lime-400 via-emerald-400 to-cyan-400 flex items-center justify-center shadow-[0_0_25px_rgba(132,204,22,0.5)]">
+                      <FilePlus2
+                        className="w-6 h-6 text-slate-950"
+                        strokeWidth={2.5}
+                      />
+                    </div>
+                  </div>
+                  <div>
+                    <div className="text-[10px] uppercase tracking-[0.4em] text-lime-300/80 font-mono-techy font-bold">
+                      Compose Custom Defects
+                    </div>
+                    <h3 className="font-display text-lg lg:text-xl font-black tracking-[0.15em] gradient-text">
+                      DEFECT SHEET GENERATOR
+                    </h3>
+                  </div>
+                </div>
+
+                <div className="relative p-6 space-y-4">
+                  <div className="grid grid-cols-1 lg:grid-cols-[180px_1fr] gap-3">
+                    <label>
+                      <div className="text-[10px] uppercase tracking-[0.3em] text-lime-300/80 font-mono-techy font-bold mb-2">
+                        Category
+                      </div>
+                      <select
+                        value={customDefectDraft.category}
+                        onChange={(e) =>
+                          setCustomDefectDraft((d) => ({
+                            ...d,
+                            category: e.target.value,
+                          }))
+                        }
+                        className="w-full bg-slate-950/70 border border-white/15 rounded-xl px-3 py-2.5 text-sm text-white focus:outline-none focus:border-lime-400/60"
+                      >
+                        <option value="financial">B.1 Financial</option>
+                        <option value="accounting">B.2 Accounting</option>
+                        <option value="administrative">B.3 Administrative</option>
+                      </select>
+                    </label>
+                    <label>
+                      <div className="text-[10px] uppercase tracking-[0.3em] text-lime-300/80 font-mono-techy font-bold mb-2">
+                        Defect Title
+                      </div>
+                      <input
+                        type="text"
+                        value={customDefectDraft.title}
+                        onChange={(e) =>
+                          setCustomDefectDraft((d) => ({
+                            ...d,
+                            title: e.target.value,
+                          }))
+                        }
+                        placeholder="e.g. Loan Disbursement Without Proper Documentation"
+                        className="w-full bg-slate-950/70 border border-white/15 rounded-xl px-3 py-2.5 text-sm text-white placeholder:text-cyan-200/40 focus:outline-none focus:border-lime-400/60"
+                      />
+                    </label>
+                  </div>
+
+                  <label>
+                    <div className="text-[10px] uppercase tracking-[0.3em] text-lime-300/80 font-mono-techy font-bold mb-2">
+                      Narrative
+                    </div>
+                    <textarea
+                      value={customDefectDraft.narrative}
+                      onChange={(e) =>
+                        setCustomDefectDraft((d) => ({
+                          ...d,
+                          narrative: e.target.value,
+                        }))
+                      }
+                      rows={5}
+                      placeholder="Describe the defect, cite the relevant Section/Rule, set out the impact, and prescribe the corrective action…"
+                      className="w-full bg-slate-950/70 border border-white/15 rounded-xl px-3 py-2.5 text-sm text-white placeholder:text-cyan-200/40 focus:outline-none focus:border-lime-400/60 leading-relaxed"
+                    />
+                  </label>
+
+                  <div className="flex items-center justify-between gap-3 flex-wrap">
+                    <div className="text-[10px] text-cyan-200/60 italic">
+                      Custom defects added here are appended to the
+                      categorised Audit Defects sheet automatically.
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (
+                          !customDefectDraft.title.trim() ||
+                          !customDefectDraft.narrative.trim()
+                        )
+                          return;
+                        setCustomDefects((prev) => [
+                          ...prev,
+                          {
+                            ...customDefectDraft,
+                            title: customDefectDraft.title.trim(),
+                            narrative:
+                              customDefectDraft.narrative.trim(),
+                            id: Date.now(),
+                          },
+                        ]);
+                        setCustomDefectDraft({
+                          category: 'financial',
+                          title: '',
+                          narrative: '',
+                        });
+                      }}
+                      disabled={
+                        !customDefectDraft.title.trim() ||
+                        !customDefectDraft.narrative.trim()
+                      }
+                      className="group relative disabled:opacity-40"
+                    >
+                      <span className="absolute -inset-0.5 bg-gradient-to-r from-lime-400 via-emerald-400 to-cyan-400 rounded-xl blur opacity-50 group-hover:opacity-80 transition-opacity" />
+                      <span className="relative inline-flex items-center gap-2 px-5 py-3 rounded-xl bg-gradient-to-r from-lime-500 via-emerald-500 to-cyan-500 text-slate-950 font-display tracking-[0.18em] uppercase text-[11px] font-black">
+                        <FilePlus2
+                          className="w-4 h-4"
+                          strokeWidth={2.8}
+                        />
+                        Add Defect
+                      </span>
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              {/* Existing custom defects list */}
+              <div className="relative overflow-hidden rounded-[28px] border border-white/15 bg-slate-950/55 backdrop-blur-2xl">
+                <div className="absolute inset-0 cyber-grid opacity-25 pointer-events-none" />
+                <div className="relative px-6 py-5 border-b border-white/10 flex items-center justify-between gap-3">
+                  <div className="flex items-center gap-2">
+                    <Sparkles className="w-3 h-3 text-lime-300" />
+                    <div className="font-display tracking-[0.18em] text-sm text-white font-black">
+                      CUSTOM DEFECTS
+                    </div>
+                  </div>
+                  <div className="px-3 py-2 rounded-xl bg-lime-500/10 border border-lime-400/30">
+                    <div className="text-[9px] uppercase tracking-[0.25em] text-lime-300/80 font-mono-techy">
+                      Total
+                    </div>
+                    <div className="font-display text-lg font-black text-lime-300 leading-none text-right">
+                      {customDefects.length}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="relative p-5">
+                  {customDefects.length === 0 ? (
+                    <div className="text-center text-cyan-200/50 italic text-sm py-6">
+                      No custom defects added yet. Use the form above to
+                      compose an observation.
+                    </div>
+                  ) : (
+                    <ol className="space-y-3">
+                      {customDefects.map((d, idx) => (
+                        <li
+                          key={d.id}
+                          className="relative rounded-2xl border border-white/10 bg-slate-900/50 p-4 anim-row"
+                          style={{ animationDelay: `${idx * 0.05}s` }}
+                        >
+                          <div className="flex items-start justify-between gap-3 mb-2">
+                            <div className="flex items-center gap-2">
+                              <span className="px-2 py-0.5 rounded-full text-[9px] tracking-[0.2em] font-display font-bold border bg-lime-400/15 border-lime-400/40 text-lime-300 uppercase">
+                                {d.category === 'financial'
+                                  ? 'B.1 Financial'
+                                  : d.category === 'accounting'
+                                  ? 'B.2 Accounting'
+                                  : 'B.3 Administrative'}
+                              </span>
+                              <span className="font-display font-black text-white text-sm tracking-[0.05em]">
+                                {d.title}
+                              </span>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setCustomDefects((prev) =>
+                                  prev.filter((x) => x.id !== d.id)
+                                )
+                              }
+                              className="shrink-0 w-7 h-7 rounded-lg border border-rose-400/30 bg-rose-500/10 hover:bg-rose-500/20 text-rose-300 flex items-center justify-center transition-colors"
+                              title="Remove"
+                            >
+                              <Trash2
+                                className="w-3.5 h-3.5"
+                                strokeWidth={2.5}
+                              />
+                            </button>
+                          </div>
+                          <p
+                            className="text-[12px] text-white/85 leading-relaxed text-justify"
+                            style={{
+                              fontFamily:
+                                "'Space Grotesk', system-ui, sans-serif",
+                            }}
+                          >
+                            {d.narrative}
+                          </p>
+                        </li>
+                      ))}
+                    </ol>
                   )}
                 </div>
               </div>
