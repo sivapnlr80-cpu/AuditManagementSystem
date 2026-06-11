@@ -1,0 +1,130 @@
+
+===== PAGE 1 =====
+Steps to be followed for carrying out the procedure to be made in
+e -Audit of PACS.
+CEO Login:
+ Mapping of secured/unsecured & Agricultural/Non-Agricultural loans for
+generation of NPA Report in the new format):
+CEO Login -> Configuration -> Loans -> Product purpose mapping -> Product name ->
+CKCC Loans ->Secured/unsecured -> Agricultural/ Non -> Agricultural -> mapping –
+click update.
+ For NPA Report Re-generation:
+CEO Login -> Loans Module -> Reports -> COMMON ACCOUNTING SYSTEM -> NPA
+Details -> select period -> Regenerate demand -> View -> wait for 15 to 20 minutes ->
+then download the report.
+===== PAGE 2 =====
+ Loans, Deposits, Share capital Outstanding’s & NPA report Download and verify all
+the outstanding balances:
+CEO Login/ Auditor login -> Audit module -> Enterprises accounts -> download of
+Outstanding - Share capital, Deposits, Loans, NPA statement -> verification of balances
+and accrued interests.
+ In case of any variation in Accrued interest for the short-Term loaning (one year) i.e
+CKCC, CC etc between ERP and manual interest calculations. The Auditor/CEO has to
+browse CEO Login -> Loans module-> collection screen -> view Demand -> then Notice
+if there is any amounts displayed/pending in “previous interest” column where the
+auditor / CEO has to verify genuinely and correct them in DPDM logins if it is actually
+not recoverable in the “correction tool” option which was provided to DPDMs of the
+respective district. If it is reflected as zero (o), in previous interest coloum, there is
+nothing to do at society end.
+===== PAGE 3 =====
+ In case of any variation in Accrued interest for the Long-Term loaning i.e LT, RN,RMG
+etc between ERP and manual interest calculations. The Auditor/CEO has to browse
+CEO login -> Loans module-> Repayment chart -> add installment details -> then the
+repayment chart has to be modified in accordance to the manual/ ledger details.
+To update the projected policy/ ledger details, the CEO has to make changes in
+CEO login -> Configurations -> Loans -> modify loan parameters -> click 2 in 31 coloum
+to adjust the collection amounts according to the predefined repayment chart of ERP.
+Then only the changes made will be updated.
+ Whenever the changes have been made pertaining to Loans outstanding’s /accrued
+interest, the CEO/Auditor should ensure that the Re-generation has to be done in
+Loans -> reports -> COMMON ACCOUNTING SYSTEM -> OUTSTANDINGS LOANS &
+ADVANCES -> Regenerate Demand and also in the NPA Details -> Regenerate
+Demand. Then only the changes that are made will be updated.
+===== PAGE 4 =====
+ Reconciliation of R. Memo of DCCB & Other confirmations of Assets: Reconciliation
+of R-Memo with DCCB bank & other confirmations issued by vendors relating to
+Fertilizers/Seeds etc.
+ Adjustment entries / rectification entries to be carried for the accounts / heads in
+FAS – if there are differences/ discrepancies in non-module accounts: CEO Login/
+Auditor login -> Audit module -> Provisions/ FAS other transfers -> Adjustment entries
+as on 31st march -> Select Transaction Recording Date 31.03.2025 -> and actual
+transaction date as 31.3.2025 -> Pass voucher and post.
+ To create CEF Provision: CEO Login/ Auditor login -> Audit module -> Provisions ->
+Adjustment entries as on 31st march -> Select Transaction Recording Date 31.03.2025
+– CEO Login -> FAS -> Pass voucher -> select 31.3.2025 -> vie -> Pass voucher and post.
+===== PAGE 5 =====
+ To enter CEO/PIC/Board Meetings/ SLIMC/DLIMC/NCD ID / PAN Number Details:
+CEO Login -> Governance -> Board of Directors -> Add director details.
+ To enter Auditor Details: CEO Login -> Governance -> Audit details -> Add Auditor
+details.
+===== PAGE 6 =====
+AUDITOR LOGIN
+ Auditor should ensure that the closing trial balance of the previous year should be
+tallied with opening Trail balance of the present year i.e 2024-2025.
+ Auditor has to ensure there are no module FAS differences in all products i,e Share
+capital, Deposits and Loans etc.
+Auditor Login -> FAS -> Reports -> Other reports -> module and FAS -> select report type
+-> all & differences . clear all the module & FAS differences in all products by raising ticket to
+NLPSV.
+===== PAGE 7 =====
+ Verification of e-vouchers for all the months in day book.
+ Provisional Entries”
+ To make provisional entries in Auditor Login: Auditor Login -> Configuration -> FAS -
+> parameter master -> During Audit, Prepare Provisions Entries Automatically -> select ->
+Yes.
+===== PAGE 8 =====
+ 1. For NPA Provision - select Annexure-6and Download: Audit Module – Enterprises
+accounts -> select Annexure-6 -> Period -> View -> NPA Provision created.
+ 2. For Interest Payable on Borrowings - select Schedule-8A: Audit Module ->
+Enterprises accounts -> select Schedule 8A -> Period ->Interest Accrued on Borrowings
+===== PAGE 9 =====
+ 3. For Interest Receivable on Investments - select Schedule-16A : Audit
+(cid:633)(cid:528)(cid:711)(cid:417)(cid:451)
+Module -> Enterprises accounts -> select Schedule 16A -> Period -> Interest Accrued on
+Investments.
+ 4. For Depreciation of Fixed Assets - select Schedule-10A: Audit Module – Enterprises
+accounts -> select Schedule 10A -> opening value of the Asset (col No.8 of the previous
+report) -> percentage -> Depreciation Created Up to Beginning of the Year (col No.12
+of the previous report)
+===== PAGE 10 =====
+ 5. For provisions on Investments - select Schedule-11: Audit Module -> Enterprises
+accounts -> select Schedule 11 -> Period -> enter the provision amount.
+ 6. For provisions on Other Assets - select Schedule-16: Audit Module -> Enterprises
+accounts -> select Schedule 16 -> Period -> enter the provision amount.
+===== PAGE 11 =====
+ 7. For provisions on Sundry Debtor - select Schedule-16B: Audit Module ->
+Enterprises accounts -> select Schedule 16B -> Period -> enter the provision amount.
+ 8. For provisions on Cash & Banks - select Schedule-17: Audit Module -> Enterprises
+accounts -> select Schedule 17 -> Period -> enter the provision amount.
+===== PAGE 12 =====
+ 9. For Generation of Profit & Loss Appropriation account: Audit Module ->
+Enterprises accounts -> select profit & Loss appropriation account -> Period -> enter
+the view -> and post.
+ 10. For Computation of cost of management & Staff cost – select Annexure -8 –
+Auditor has to compute the Cost of management in annexure -8 with
+previous year
+figures.
+The difference amount for interest receivable and payable between the previous
+year and current year should be taken into account to compute/ arrive the eligibility
+/ limit of cost of management or cost of staff.
+===== PAGE 13 =====
+ Audit Classification: Auditor has to give marks in Audit Rating for some parameters
+ Audit Defects: – Auditor has to point out the defects in English only. Remarks should
+be mentioned financial parameters.
+on 10
+ Annexure 9 - Auditor has to enter the salary particulars of the staff.
+===== PAGE 14 =====
+ Annexure 11 - Auditor has to enter the details with regard to EPs and Decrees.
+Legacy Documents Upload:
+To enclose documental proofs / attachments for the Final Audit Report generated in
+pdf format, the sub module “legacy documents” is provided.
+ To upload the Documents: CEO Login – Upload – select year 2024-25 – Audit booklet
+– outstanding of Members Term deposits & Loans with product wise loans and DCB
+statement relating to Annexure 10.
+===== PAGE 15 =====
+ To upload R-Memo & other confirmations: -CEO Login – Upload – select year 2024-
+25 – Other documents – R.Memo from DCCB, other confirmations from vendors/
+other stake holders, physical verification of stock statement, physical verification of
+Loans & other Pdf files relating to sundry creditors / Sundry Debtors if the details are
+not recorded individually i.e backend subsidy, interest rebate etc.
+(each file should be less than 5 MB)

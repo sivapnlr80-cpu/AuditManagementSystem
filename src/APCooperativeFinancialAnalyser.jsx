@@ -2,35 +2,19 @@ import React, { useEffect, useMemo, useState } from 'react';
 import JSZip from 'jszip';
 import * as PDFJS from 'pdfjs-dist';
 import {
-  Receipt,
-  Table2,
-  Scale,
-  Landmark,
-  LayoutDashboard,
-  Upload,
-  ScrollText,
-  FileArchive,
-  ShieldCheck,
-  Sparkles,
-  Activity,
-  CheckCircle2,
-  XCircle,
-  ListChecks,
-  Building2,
-  FileCheck2,
-  BadgeCheck,
-  Award,
-  MessagesSquare,
-  FilePlus2,
-  Send,
-  Trash2,
-  Bot,
-  User as UserIcon,
+  Receipt, Table2, Scale, Landmark, LayoutDashboard, Upload, Printer,
+  ScrollText, FileArchive, ShieldCheck, Sparkles, Activity, CheckCircle2,
+  XCircle, ListChecks, Building2, FileCheck2, BadgeCheck, Award,
+  MessagesSquare, FilePlus2, Send, Trash2, Bot, User as UserIcon,
+  KeyRound, Zap, AlertCircle, FileText,
 } from 'lucide-react';
+
 import logoImage from './assets/logo.png';
+import auditLogo from './assets/audit-logo.png';
 import epacsLogo from './assets/epacs.png';
 
-PDFJS.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${PDFJS.version}/build/pdf.worker.min.mjs`;
+import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
+PDFJS.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
 
 async function extractPDFText(zipEntry) {
   const pdfData = await zipEntry.async('uint8array');
@@ -251,10 +235,510 @@ const LEGAL_KB = [
   },
 ];
 
+/* =====================================================================
+ * AI Legal Agent — powered by Google Gemini (gemini-2.0-flash)
+ * Two-pass pipeline: (1) draft a precise statutory narrative, then
+ * (2) humanize it into official, formal English. Appends ready-made
+ * case-law lookups on Indian Kanoon + AP High Court. Falls back to the
+ * offline corpus/keyword engine when no API key is set or a call fails.
+ *
+ * Gemini's Generative Language API supports direct browser calls with an
+ * API key (?key=...) — no backend needed.
+ *
+ * API key resolution (first match wins):
+ *   1) localStorage 'COOP_GEMINI_KEY'   (admin pastes via the AI Key panel)
+ *   2) build-time env  VITE_GEMINI_API_KEY  (.env file, not in source)
+ *   3) DEV_GEMINI_API_KEY fallback below
+ * ===================================================================== */
+const GEMINI_MODEL = 'gemini-2.5-flash-lite';
+// No hardcoded key in source. The key comes from the AI Key panel (localStorage)
+// or the VITE_GEMINI_API_KEY env var (see .env, which is git-ignored).
+const DEV_GEMINI_API_KEY = '';
+
+function getGeminiKey() {
+  // 1) localStorage (admin-pasted via the AI Key panel) — highest priority
+  try {
+    const ls =
+      typeof localStorage !== 'undefined'
+        ? localStorage.getItem('COOP_GEMINI_KEY')
+        : null;
+    if (ls && ls.trim()) return ls.trim();
+  } catch (_) {
+    /* localStorage may be unavailable */
+  }
+  // 2) Build-time env (from .env file — not in source)
+  try {
+    const envKey =
+      import.meta && import.meta.env && import.meta.env.VITE_GEMINI_API_KEY;
+    if (envKey && String(envKey).trim() && String(envKey).trim() !== 'undefined')
+      return String(envKey).trim();
+  } catch (_) {
+    /* import.meta not available */
+  }
+  // 3) Hardcoded dev fallback (last resort)
+  if (DEV_GEMINI_API_KEY && DEV_GEMINI_API_KEY !== 'AIza-YOUR-KEY-HERE') {
+    return DEV_GEMINI_API_KEY.trim();
+  }
+  return '';
+}
+
+function hasGeminiKey() {
+  return !!getGeminiKey();
+}
+
+async function geminiMessage({ system, messages, maxTokens = 1100 }) {
+  const apiKey = getGeminiKey();
+  if (!apiKey) {
+    const e = new Error('NO_API_KEY');
+    e.code = 'NO_API_KEY';
+    throw e;
+  }
+  // Map the shared {role, content} shape to Gemini's contents format.
+  // Gemini uses roles 'user' and 'model' (assistant -> model).
+  const contents = (messages || []).map((m) => ({
+    role: m.role === 'assistant' || m.role === 'model' ? 'model' : 'user',
+    parts: [{ text: String(m.content ?? '') }],
+  }));
+
+  const body = {
+    contents,
+    generationConfig: { maxOutputTokens: maxTokens, temperature: 0.3 },
+  };
+  if (system) {
+    body.system_instruction = { parts: [{ text: system }] };
+  }
+
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${encodeURIComponent(
+    apiKey
+  )}`;
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const t = await res.text().catch(() => '');
+    throw new Error(`Gemini API ${res.status}: ${t.slice(0, 300)}`);
+  }
+  const data = await res.json();
+  const cand = (data.candidates && data.candidates[0]) || null;
+  const parts = (cand && cand.content && cand.content.parts) || [];
+  return parts
+    .map((p) => p.text || '')
+    .join('\n')
+    .trim();
+}
+
+// Construct ready-made case-law / statute lookups (no live scraping).
+function buildCaseLawReferences(query) {
+  const ikInput = `${query} cooperative society Andhra Pradesh APCS Act 1964`;
+  const ik = `https://indiankanoon.org/search/?formInput=${encodeURIComponent(
+    ikInput
+  )}`;
+  const aphc = `https://www.google.com/search?q=${encodeURIComponent(
+    `${query} Andhra Pradesh High Court judgment site:aphc.gov.in`
+  )}`;
+  return [
+    { label: 'Indian Kanoon — statute & case-law search', url: ik },
+    { label: 'Andhra Pradesh High Court — judgments search', url: aphc },
+  ];
+}
+
+// Two-pass AI agent: formal legal narrative -> humanized rewrite.
+async function generateLegalAgentAnswer(query, history = []) {
+  const draftSystem =
+    'You are a Senior Statutory Auditor and legal counsel specialising in the ' +
+    'Andhra Pradesh Cooperative Societies (APCS) Act, 1964, the APCS Rules, 1964, ' +
+    'NABARD IRAC norms, the Audit Manual for PACS, and the Cooperative Accounting ' +
+    'Standards (CAS) Manual. Answer strictly, accurately and in a practical, ' +
+    'field-ready manner for a cooperative auditor. ' +
+    'Always cite the exact provisions using abbreviations (u/s = under section, ' +
+    'r/w = read with), e.g. Section 55-A r/w Rules 58 & 59, Section 60 (surcharge), ' +
+    'Section 54 (rectification), Section 71 (recovery). ' +
+    'Structure the answer as: (1) the applicable provisions; (2) a short, clear ' +
+    'explanation; and, when the question describes an irregularity or a loss, ' +
+    '(3) a ready-to-use Defect-Sheet narrative, and (4) how the matter is pursued by ' +
+    'the statutory officers — Inquiry Officer (u/s 51), Inspection Officer (u/s 52/53), ' +
+    'Surcharge Officer / Registrar (u/s 60), Liquidator (on winding-up) and Arbitrator ' +
+    '(dispute u/s 61), with recovery u/s 71. ' +
+    'For inquiry / inspection report questions, explain the Part A (narrative and ' +
+    'rectifiable defects) vs Part B (responsibility-fixing: civil liability for surcharge, ' +
+    'and criminal liability where an offence is disclosed) format. ' +
+    'Where the question concerns a legal position, note the relevant principle from Indian ' +
+    'case law (Supreme Court / Andhra Pradesh High Court) at a general level. ' +
+    'IMPORTANT: never invent case names, party names, or citations you are not certain of — ' +
+    'if unsure, describe the settled legal principle without attributing a fake citation. ' +
+    'Produce a precise, well-structured legal narrative.';
+  const draft = await geminiMessage({
+    system: draftSystem,
+    messages: [...history, { role: 'user', content: query }],
+    maxTokens: 1100,
+  });
+
+  const humanizeSystem =
+    'Rewrite the following legal narrative into clear, precise, formal English suitable for ' +
+    'OFFICIAL USE — fit for inclusion in audit reports, defect sheets, inquiry / inspection ' +
+    'reports and official correspondence of a cooperative society. Use a professional, ' +
+    'impersonal and authoritative tone; avoid casual or conversational wording. ' +
+    'Preserve every statutory citation exactly (sections, rules, NABARD norms, Audit Manual / CAS ' +
+    'paragraphs) — do not drop, change or renumber any provision, and retain the abbreviations ' +
+    'u/s and r/w. ' +
+    'Keep the structure of the narrative intact: the applicable provisions, the explanation, ' +
+    'the Defect-Sheet narrative (if present), the action by the statutory officers, and any ' +
+    'Part A / Part B breakdown — presented in well-organised paragraphs or numbered points. ' +
+    'Improve readability and remove redundancy, but do not simplify to the point of losing legal ' +
+    'precision. Do not add new legal claims or sections, and do not fabricate case citations that ' +
+    'were not in the narrative.';
+  let humanized = draft;
+  try {
+    humanized = await geminiMessage({
+      system: humanizeSystem,
+      messages: [{ role: 'user', content: `LEGAL NARRATIVE:\n\n${draft}` }],
+      maxTokens: 1100,
+    });
+  } catch (_) {
+    // If the humanize pass fails, fall back to the draft narrative.
+    humanized = draft;
+  }
+
+  return {
+    text: humanized || draft,
+    references: buildCaseLawReferences(query),
+  };
+}
+
+/* =====================================================================
+ * Composite audit-defect scenarios — lets the OFFLINE engine answer
+ * natural-language defect questions (no API key needed). Each scenario
+ * has required keyword groups (any synonym within a group counts) plus
+ * optional groups that boost the match. Returns applicable provisions
+ * and a ready-to-use defect narrative.
+ * ===================================================================== */
+const DEFECT_SCENARIOS = [
+  {
+    id: 'salesman-non-remittance',
+    kind: 'defect',
+    groups: [
+      ['salesman', 'saleman', 'sales man', 'sales-man', 'seller', 'depot incharge', 'depot in-charge', 'fair price shop', 'fps dealer'],
+      ['not remit', 'non remit', 'non-remit', 'remitted', 'unremitted', 'un-remitted', 'not deposit', 'not credited', 'not handed over', 'withheld', 'retained the', 'misappropri', 'cash shortage', 'shortage of cash', 'short remit'],
+    ],
+    minGroups: 2,
+    optionalGroups: [
+      ['day book', 'daybook', 'day-book', 'cash book', 'cashbook', 'books of account'],
+      ['ceo', 'chief executive', 'secretary', 'president', 'not recorded', 'not entered', 'not accounted', 'suppress', 'not posted'],
+    ],
+    answer: `SCENARIO — Sale proceeds not remitted by the Salesman and not recorded in the Day Book by the CEO
+
+▸ APPLICABLE PROVISIONS
+• Section 55-A, APCS Act, 1964 r/w Rules 58 & 59 — The Chief Executive Officer and the President are jointly and severally responsible for keeping, maintaining, signing and authenticating the prescribed books of account (Day Book, Cash Book, Ledgers). Failure to record cash sale proceeds in the Day Book is a direct breach.
+• Section 60, APCS Act, 1964 (Surcharge) — The Registrar may surcharge the salesman and the CEO for the loss caused to the Society by negligence, misconduct, breach of trust or misappropriation of its funds (the un-remitted amount).
+• Section 50 r/w Section 54, APCS Act, 1964 — The defect noticed in audit is brought to the Society's notice; the Registrar may direct rectification and recovery within a specified time.
+• Section 30 / 30(xxii), APCS Act, 1964 — Managing Committee's duty to supervise the CEO and review cash handling; failure attracts responsibility.
+• Section 71, APCS Act, 1964 — Recovery of the un-remitted amount as an arrear, enforceable as a decree of a civil court.
+• Audit Manual for PACS (cash-management paras) r/w CAS Manual — daily reconciliation of cash sales with the Day Book / Cash Book is mandatory.
+
+▸ NATURE OF VIOLATION
+Temporary misappropriation / retention of the Society's sale proceeds by the salesman, coupled with non-accounting of the receipt in the Day Book by the CEO — a breach of statutory record-keeping and a loss to the Society.
+
+▸ DEFECT (as it would read in the Defect Sheet)
+"Cash sale proceeds of ₹______ collected by the Salesman were not remitted to the Society's cash chest / bank, and the corresponding receipt was not recorded in the Day Book by the Chief Executive Officer. This constitutes misappropriation and suppression of receipts in breach of Section 55-A, APCS Act, 1964 r/w Rules 58 & 59. The CEO and the Salesman are jointly and severally responsible. The CEO is directed u/s 54 to recover the amount and pass correct entries; the un-remitted sum is recoverable u/s 71, and the responsible persons are liable to surcharge u/s 60 of the Act for the loss caused to the Society."`,
+  },
+  {
+    id: 'transaction-not-recorded',
+    kind: 'defect',
+    groups: [
+      ['day book', 'daybook', 'day-book', 'cash book', 'cashbook', 'books of account', 'ledger'],
+      ['not recorded', 'not entered', 'not accounted', 'unrecorded', 'omitted', 'suppress', 'not posted', 'not maintained', 'off the books'],
+    ],
+    minGroups: 2,
+    optionalGroups: [
+      ['ceo', 'chief executive', 'secretary', 'president'],
+      ['cash', 'receipt', 'amount', 'transaction', 'collection'],
+    ],
+    answer: `SCENARIO — Receipts / transactions not recorded in the Day Book (Books of Account)
+
+▸ APPLICABLE PROVISIONS
+• Section 55-A, APCS Act, 1964 r/w Rules 58 & 59 — The CEO and the President are jointly and severally responsible for keeping and authenticating the prescribed books of account; non-recording of a transaction in the Day Book / Cash Book is a direct breach.
+• Section 60, APCS Act, 1964 (Surcharge) — surcharge for any loss caused to the Society by such suppression or negligence.
+• Section 50 r/w Section 54, APCS Act, 1964 — audit defect to be rectified within the time directed by the Registrar.
+• Section 71, APCS Act, 1964 — recovery of any consequential shortfall as an arrear.
+• Audit Manual for PACS r/w CAS Manual — every receipt and payment must be entered in the Day Book on the date of the transaction.
+
+▸ DEFECT (as it would read in the Defect Sheet)
+"A receipt / transaction of ₹______ was not recorded in the Day Book / Cash Book, resulting in suppression of accounts in breach of Section 55-A, APCS Act, 1964 r/w Rules 58 & 59. The Chief Executive Officer is directed u/s 54 to pass the correct entries and reconcile the books; the responsible officer is liable to surcharge u/s 60 and the amount is recoverable u/s 71 of the Act."`,
+  },
+
+  /* ---- More recurring PACS audit defects ---- */
+  {
+    id: 'cash-shortage-chest',
+    kind: 'defect',
+    groups: [
+      ['cash chest', 'cash on hand', 'physical cash', 'cash balance', 'cash in hand', 'cash book balance'],
+      ['shortage', 'short', 'missing', 'difference', 'not tally', 'does not tally', 'negative cash', 'misappropri', 'deficit'],
+    ],
+    minGroups: 2,
+    answer: `SCENARIO — Shortage of cash in the cash chest / cash on hand not tallying with the Cash Book
+
+▸ APPLICABLE PROVISIONS
+• Section 55-A, APCS Act, 1964 r/w Rules 58 & 59 — Cash Book and cash chest must be maintained and the closing cash balance physically verified daily; a shortage is a breach.
+• Section 60, APCS Act, 1964 (Surcharge) — the responsible officer / cashier is surchargeable for the cash shortage as a loss to the Society.
+• Section 50 r/w Section 54 — defect to be rectified within the time directed by the Registrar.
+• Section 71, APCS Act, 1964 — recovery of the shortage as an arrear.
+
+▸ DEFECT (Defect Sheet)
+"On physical verification the cash on hand fell short of the Cash Book balance by ₹______. The unexplained shortage constitutes misappropriation in breach of Section 55-A, APCS Act, 1964 r/w Rules 58 & 59. The Chief Executive Officer / cashier is directed u/s 54 to make good the shortage; the amount is recoverable u/s 71 and the responsible person is liable to surcharge u/s 60 of the Act."`,
+  },
+  {
+    id: 'bogus-ghost-loans',
+    kind: 'defect',
+    groups: [
+      ['bogus loan', 'ghost loan', 'benami loan', 'fictitious loan', 'fake loan', 'bogus member', 'ghost member', 'non-existent member', 'benami', 'fictitious member'],
+    ],
+    minGroups: 1,
+    optionalGroups: [
+      ['loan', 'advance', 'sanction', 'disburse'],
+      ['without security', 'no documents', 'no kyc', 'not genuine'],
+    ],
+    answer: `SCENARIO — Bogus / benami / ghost loans sanctioned to non-existent or ineligible members
+
+▸ APPLICABLE PROVISIONS
+• Section 55-A, APCS Act, 1964 r/w Rules 58 & 59 — loan ledgers and member records must reflect genuine, verifiable transactions; bogus entries are a breach.
+• Section 30 / 30(xxii), APCS Act, 1964 — Managing Committee's duty to sanction loans properly and review overdues / defaulters.
+• Section 60, APCS Act, 1964 (Surcharge) — surcharge of the office-bearers / CEO who sanctioned or disbursed the bogus loans for the loss to the Society.
+• Section 50 r/w Section 54, and Section 71 — rectification and recovery of the diverted amount; the matter also attracts NABARD IRAC norms for asset classification.
+
+▸ DEFECT (Defect Sheet)
+"Loans aggregating ₹______ were sanctioned / disbursed in the names of non-existent / benami members without genuine documentation, amounting to diversion / misappropriation of the Society's funds in breach of Section 55-A r/w Section 30, APCS Act, 1964. The sanctioning office-bearers and the CEO are jointly liable; the amount is recoverable u/s 71 and the responsible persons are liable to surcharge u/s 60 of the Act."`,
+  },
+  {
+    id: 'interest-not-charged',
+    kind: 'defect',
+    groups: [
+      ['interest not charged', 'interest not collected', 'interest not levied', 'not levied interest', 'penal interest not', 'no interest charged', 'interest omitted', 'interest short', 'under charged interest', 'under-charged interest', 'less interest charged'],
+    ],
+    minGroups: 1,
+    answer: `SCENARIO — Interest / penal interest on loans not charged or short-charged
+
+▸ APPLICABLE PROVISIONS
+• CAS Manual r/w Section 55-A, APCS Act, 1964 — interest and penal interest must be correctly computed and posted to each loan account; omission / short-charge is a breach.
+• Section 60, APCS Act, 1964 (Surcharge) — surcharge for the loss of income caused to the Society.
+• Section 50 r/w Section 54 — defect to be rectified; Section 71 — recovery of the short-collected interest.
+
+▸ DEFECT (Defect Sheet)
+"Interest / penal interest of ₹______ recoverable on loan accounts was not charged / was short-charged, causing loss of income to the Society in breach of the CAS Manual r/w Section 55-A, APCS Act, 1964. The CEO is directed u/s 54 to compute and recover the amount; the shortfall is recoverable u/s 71 and the responsible officer is liable to surcharge u/s 60."`,
+  },
+  {
+    id: 'stock-shortage',
+    kind: 'defect',
+    groups: [
+      ['stock shortage', 'shortage of stock', 'stock not tally', 'stock does not tally', 'physical stock', 'godown shortage', 'missing stock', 'stock difference', 'shortfall in stock', 'shortage of fertilizer', 'shortage of fertiliser', 'pds stock', 'stock register'],
+      ['shortage', 'short', 'missing', 'difference', 'not tally', 'shortfall', 'deficit'],
+    ],
+    minGroups: 1,
+    answer: `SCENARIO — Shortage of stock (fertiliser / PDS / consumer goods) against the Stock Register
+
+▸ APPLICABLE PROVISIONS
+• Section 55-A, APCS Act, 1964 r/w Rules 58 & 59 — Stock Register must be maintained and physically verified; a shortage against book stock is a breach.
+• Section 60, APCS Act, 1964 (Surcharge) — surcharge for the value of the stock shortage as a loss to the Society.
+• Section 50 r/w Section 54, and Section 71 — rectification and recovery; the Audit Manual for PACS prescribes periodical physical verification of stock.
+
+▸ DEFECT (Defect Sheet)
+"On physical verification the closing stock fell short of the Stock Register balance by ₹______ (qty ______). The unexplained shortage constitutes misappropriation in breach of Section 55-A, APCS Act, 1964 r/w Rules 58 & 59. The CEO / storekeeper is directed u/s 54 to make good the shortage; the value is recoverable u/s 71 and the responsible person is liable to surcharge u/s 60."`,
+  },
+  {
+    id: 'overdue-time-barred',
+    kind: 'defect',
+    groups: [
+      ['time barred', 'time-barred', 'barred by limitation', 'limitation', 'overdue loan', 'overdues not reviewed', 'not renewed', 'no recovery action', 'recovery not initiated', 'dead loan', 'chronic overdue'],
+    ],
+    minGroups: 1,
+    answer: `SCENARIO — Overdue loans allowed to become time-barred / no recovery action taken
+
+▸ APPLICABLE PROVISIONS
+• Section 30(xxii), APCS Act, 1964 — Managing Committee's specific duty to conduct a periodical review of all overdue loans and defaulters; failure is a breach.
+• Section 71, APCS Act, 1964 — recovery-certificate machinery available but not invoked in time.
+• Section 60, APCS Act, 1964 (Surcharge) — surcharge for the loss where a recoverable debt has become irrecoverable / barred by limitation through negligence.
+• Section 50 r/w Section 54 — defect to be rectified.
+
+▸ DEFECT (Defect Sheet)
+"Overdue loans aggregating ₹______ were allowed to remain without recovery action and have become / are nearing time-barred, in breach of Section 30(xxii), APCS Act, 1964. The Managing Committee and the CEO failed to initiate recovery u/s 71. The responsible persons are liable to surcharge u/s 60 for the resultant loss; the CEO is directed u/s 54 to initiate immediate recovery for live debts."`,
+  },
+  {
+    id: 'investments-not-made',
+    kind: 'defect',
+    groups: [
+      ['investment not made', 'funds not invested', 'reserve fund not invested', 'not invested', 'idle funds', 'fund diverted', 'diversion of funds', 'statutory investment', 'reserve fund diverted', 'funds diverted'],
+    ],
+    minGroups: 1,
+    answer: `SCENARIO — Reserve Fund / surplus funds not invested as required (or funds diverted)
+
+▸ APPLICABLE PROVISIONS
+• Reserve Fund provisions of the APCS Act, 1964 and the Rules on investment of funds r/w Section 55-A — statutory reserves / surplus funds must be invested as prescribed; non-investment or diversion is a breach.
+• Section 60, APCS Act, 1964 (Surcharge) — surcharge for the loss of interest income / value to the Society.
+• Section 50 r/w Section 54, and Section 71 — rectification and recovery of any diverted amount.
+
+▸ DEFECT (Defect Sheet)
+"Reserve Fund / surplus funds of ₹______ were not invested as statutorily required (or were diverted to non-permitted use), causing loss to the Society in breach of the Reserve Fund provisions r/w Section 55-A, APCS Act, 1964. The CEO is directed u/s 54 to invest / restore the funds; any diverted amount is recoverable u/s 71 and the responsible persons are liable to surcharge u/s 60."`,
+  },
+  {
+    id: 'npa-provision-not-made',
+    kind: 'defect',
+    groups: [
+      ['npa', 'irac', 'asset classification', 'sub-standard', 'sub standard', 'doubtful asset', 'bad and doubtful', 'overdue interest', 'provisioning'],
+      ['provision not made', 'not provided', 'short provision', 'not classified', 'wrong classification', 'not made', 'understated', 'provisioning'],
+    ],
+    minGroups: 1,
+    answer: `SCENARIO — NPA not classified / provision not made as per NABARD IRAC norms
+
+▸ APPLICABLE PROVISIONS
+• NABARD IRAC norms r/w Schedule-9 and Section 55-A, APCS Act, 1964 — assets must be classified (Standard / Sub-Standard / Doubtful / Loss) and provisions made; failure understates losses and is a breach.
+• Section 60, APCS Act, 1964 (Surcharge) — where mis-classification conceals or causes a loss.
+• Section 50 r/w Section 54 — defect to be rectified in the accounts.
+
+▸ DEFECT (Defect Sheet)
+"NPAs were not classified and provisions of ₹______ were not made as required under NABARD IRAC norms r/w Schedule-9 and Section 55-A, APCS Act, 1964, thereby overstating profit / understating losses. The CEO is directed u/s 54 to classify the assets and make the required provisions in the accounts."`,
+  },
+
+  /* ---- Statutory officers — roles, powers & how a defect is pursued ---- */
+  {
+    id: 'officer-inquiry-report',
+    kind: 'officer',
+    groups: [
+      ['inquiry officer', 'enquiry officer', 'inquiry report', 'enquiry report', 'inquiry u/s 51', 'section 51 report', 'inquiry under section 51'],
+      ['part a', 'part b', 'part-a', 'part-b', 'civil liability', 'criminal liability', 'key aspects', 'aspects to report', 'what to report', 'report format', 'responsibility', 'charge'],
+    ],
+    minGroups: 2,
+    answer: `INQUIRY OFFICER'S REPORT — Key aspects, Part A & Part B (Inquiry u/s 51, APCS Act, 1964)
+
+▸ KEY ASPECTS THE REPORT MUST COVER
+• The constitution, working and financial condition of the Society as on the date of inquiry.
+• Each specific point / allegation referred for inquiry, with a clear finding on it.
+• The defects, irregularities and violations noticed, citing the provision breached (sections / rules).
+• The loss, if any, caused to the Society — quantified item-wise.
+• Fixation of responsibility — the person(s) responsible for each irregularity / loss.
+• The documentary evidence relied upon and the explanation of the persons concerned.
+• Recommendations — rectification u/s 54, surcharge u/s 60, recovery u/s 71, prosecution where a criminal offence is disclosed, and any further action (supersession / cancellation).
+
+▸ PART A vs PART B (commonly-followed format)
+• PART A — the narrative / general part: records the findings on the working and financial condition and the irregularities that are rectifiable in nature (no fixing of personal monetary liability). These are pursued through rectification u/s 54.
+• PART B — the responsibility-fixing / charge part: lists each item that caused loss to the Society, the amount, and the person(s) held responsible — i.e. the basis for civil liability (surcharge u/s 60 and recovery u/s 71) and, where a criminal offence is disclosed, criminal liability (prosecution).
+
+▸ IF ONLY CIVIL LIABILITY IS INVOLVED
+• PART A is still required — it carries the narrative findings and the rectifiable defects.
+• PART B is also required — it must quantify the loss and name the responsible person(s) so that surcharge proceedings u/s 60 and recovery u/s 71 can follow.
+• Only the criminal-liability content is omitted (no prosecution schedule), since no criminal offence such as misappropriation with mens rea or falsification of accounts is disclosed.
+In short: civil liability ⇒ BOTH Part A (narrative + rectifiable defects) and Part B (loss + responsibility for surcharge) are prepared; only the criminal-liability portion is left out.
+
+(Note: the precise Part A / Part B layout can vary by departmental circular / proforma — confirm against the prescribed inquiry-report format in force.)`,
+  },
+  {
+    id: 'officer-inquiry',
+    kind: 'officer',
+    groups: [
+      ['inquiry officer', 'enquiry officer', 'inquiry into', 'enquiry into', 'inquiry under section 51', 'power of inquiry', 'powers of inquiry officer'],
+    ],
+    minGroups: 1,
+    answer: `INQUIRY OFFICER — Inquiry into the affairs of a Society (Section 51, APCS Act, 1964)
+
+• Power: The Registrar (or an officer authorised by him) may, on his own motion or on application by a financing bank or a prescribed proportion of members, hold an inquiry into the constitution, working and financial condition of a Society.
+• Duties: examine the books, records and office-bearers; fix responsibility for the irregularities noticed; submit an inquiry report.
+• Outcome of findings: defects are pursued for rectification u/s 54; loss / misappropriation is surcharged u/s 60; amounts are recovered u/s 71; serious findings may lead to supersession of the committee or cancellation of registration.`,
+  },
+  {
+    id: 'officer-inspection',
+    kind: 'officer',
+    groups: [
+      ['inspection officer', 'inspecting officer', 'inspection of society', 'inspection of books', 'inspection under section 52', 'power of inspection', 'powers of inspection officer'],
+    ],
+    minGroups: 1,
+    answer: `INSPECTION OFFICER — Inspection of a Society and its books (Sections 52 & 53, APCS Act, 1964)
+
+• Power: The Registrar or an officer authorised by him may inspect, or cause the inspection of, any Society and its books and accounts (Section 52). A financing bank / creditor may seek inspection under Section 53.
+• Duties: verify the books, cash, stock and securities; report the irregularities and defects.
+• Outcome: defects → rectification u/s 54; loss → surcharge u/s 60; recovery u/s 71.`,
+  },
+  {
+    id: 'officer-surcharge',
+    kind: 'officer',
+    groups: [
+      ['surcharge officer', 'surcharge proceedings', 'how to surcharge', 'power to surcharge', 'surcharge order', 'section 60 surcharge', 'powers of surcharge officer'],
+    ],
+    minGroups: 1,
+    answer: `SURCHARGE OFFICER — Surcharge of office-bearers / officers (Section 60, APCS Act, 1964)
+
+• Power: The Registrar, on application by the Society or otherwise (including on audit / inquiry / inspection findings), may surcharge any present or former officer for any loss caused to the Society by negligence, misconduct, breach of trust or misappropriation of its funds / property.
+• Process: quantify the loss, issue notice, hear the person, and pass a surcharge order fixing the amount payable.
+• Recovery: the surcharged amount is recoverable as an arrear u/s 71 of the Act.`,
+  },
+  {
+    id: 'officer-liquidator',
+    kind: 'officer',
+    groups: [
+      ['liquidator', 'liquidation', 'winding up', 'wound up', 'winding-up'],
+    ],
+    minGroups: 1,
+    answer: `LIQUIDATOR — On winding up of a Society (APCS Act, 1964)
+
+• Appointment: on cancellation of registration / winding up of the Society, a Liquidator is appointed to wind up its affairs.
+• Powers / duties: take charge of the assets, books and records; determine the contributions of present and past members; settle the list of creditors and debtors; realise the assets and distribute the proceeds as per priority.
+• Defects / losses: irregularities and misappropriations found are pursued — the responsible persons can be surcharged u/s 60 and the amounts recovered u/s 71; the Liquidator includes such dues in the list for recovery.`,
+  },
+  {
+    id: 'officer-arbitrator',
+    kind: 'officer',
+    groups: [
+      ['arbitrator', 'arbitration', 'arbitration award', 'dispute referred', 'reference to arbitration', 'award executable', 'cooperative dispute'],
+    ],
+    minGroups: 1,
+    answer: `ARBITRATOR — Decision of disputes (Section 61, APCS Act, 1964)
+
+• Jurisdiction: any dispute touching the constitution, management or business of a Society is referred under Section 61 to the Registrar, his nominee, or an arbitrator for decision.
+• Process: the parties are heard and an award is passed; the limitation for reference is governed by Section 62.
+• Effect: the award is executable as a decree of a civil court, and any sum awarded is recoverable as an arrear u/s 71 of the Act.`,
+  },
+];
+
+// Standard escalation block appended to every defect answer — how the
+// defect is pursued by each statutory officer under the APCS Act, 1964.
+const OFFICER_ESCALATION = `▸ ACTION BY STATUTORY OFFICERS
+• Inquiry Officer (u/s 51) — on inquiry into the working / financial condition of the Society, records the defect and fixes responsibility.
+• Inspection Officer (u/s 52 / 53) — on inspection of the books, cash and stock, verifies and reports the irregularity.
+• Surcharge Officer / Registrar (u/s 60) — quantifies the loss and surcharges the responsible officer(s) for negligence, misconduct, breach of trust or misappropriation.
+• Liquidator (on winding-up of the Society) — takes the defect on record, includes the amount in the list of dues, and proceeds to recover it from the persons responsible.
+• Arbitrator / Registrar's nominee (dispute referred u/s 61) — adjudicates any resulting dispute; the award is executable and the amount recoverable u/s 71.`;
+
+function matchDefectScenario(q) {
+  let best = null;
+  let bestScore = 0;
+  for (const sc of DEFECT_SCENARIOS) {
+    const req = sc.groups || [];
+    const opt = sc.optionalGroups || [];
+    let reqHits = 0;
+    for (const g of req) if (g.some((kw) => q.includes(kw))) reqHits++;
+    if (reqHits < (sc.minGroups || req.length)) continue;
+    let optHits = 0;
+    for (const g of opt) if (g.some((kw) => q.includes(kw))) optHits++;
+    const score = reqHits * 2 + optHits;
+    if (score > bestScore) {
+      best = sc;
+      bestScore = score;
+    }
+  }
+  if (!best) return null;
+  // Defect answers get the statutory-officer escalation footer; the
+  // officer-role answers are self-contained.
+  return best.kind === 'defect'
+    ? `${best.answer}\n\n${OFFICER_ESCALATION}`
+    : best.answer;
+}
+
 function answerLegalQuery(query) {
   if (!query || !query.trim())
     return 'Please type a question about a specific Section, Rule, Annexure, Schedule, or Paragraph of the Audit Manual.';
   const q = query.toLowerCase().trim();
+  // Composite natural-language audit-defect scenarios (handled first)
+  const scenarioAns = matchDefectScenario(q);
+  if (scenarioAns) return scenarioAns;
   // Exact-keyword match scoring
   let best = null;
   let bestScore = 0;
@@ -273,6 +757,113 @@ function answerLegalQuery(query) {
   return `I don't have a precise entry for that yet. Try asking about a specific Section (e.g. Section 50, 54, 55-A, 60, 71, 115-D), Rule (e.g. Rule 22, 41(C)(6), 58, 59), Annexure (5, 8, 11), Schedule (9, 16B), or Audit Manual paragraph (6.12, 7.1, 7.4, 7.5, IRAC norms).`;
 }
 
+/* === Legal corpus loader =============================================
+ * The 5 reference PDFs bundled in /public/legal-references/ are
+ * fetched and parsed by PDF.js into an in-memory page-text index.
+ * Re-running parsing for the same PDF is idempotent.
+ * ================================================================= */
+const BUNDLED_LEGAL_REFS = [
+  {
+    id: 'apcs-act',
+    name: 'APCS Act 1964',
+    url: '/legal-references/apcs-act-1964.pdf',
+  },
+  {
+    id: 'apcs-rules',
+    name: 'APCS Rules 1964',
+    url: '/legal-references/apcs-rules-1964.pdf',
+  },
+  {
+    id: 'audit-manual',
+    name: 'Audit Manual for PACS',
+    url: '/legal-references/audit-manual-pacs.pdf',
+  },
+  {
+    id: 'handbook-statutory',
+    name: 'Handbook on Statutory Functions',
+    url: '/legal-references/handbook-statutory-functions.pdf',
+  },
+  {
+    id: 'handbook-laws',
+    name: 'Handbook on Cooperative Laws',
+    url: '/legal-references/handbook-cooperative-laws.pdf',
+  },
+];
+
+async function parsePdfArrayBufferToPages(buffer, label) {
+  const data = new Uint8Array(buffer);
+  const pdfDocument = await PDFJS.getDocument({ data }).promise;
+  const pages = [];
+  for (let n = 1; n <= pdfDocument.numPages; n++) {
+    const page = await pdfDocument.getPage(n);
+    const tc = await page.getTextContent();
+    const text = tc.items
+      .map((it) => it.str)
+      .join(' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+    pages.push({ n, text });
+  }
+  return { name: label, pages };
+}
+
+// Search corpus: returns top-K page snippets for a query.
+// Scoring = sum of term-frequency weighted by inverse keyword length
+// boost, with a small bonus for exact phrase match.
+function searchLegalCorpus(corpus, query, k = 4) {
+  const q = (query || '').toLowerCase().trim();
+  if (!q) return [];
+  const phrase = q;
+  const tokens = q
+    .split(/[^a-z0-9()\-\.]+/)
+    .filter((t) => t && t.length >= 2);
+
+  const ranked = [];
+  for (const doc of corpus) {
+    for (const p of doc.pages) {
+      const t = p.text.toLowerCase();
+      if (!t) continue;
+      let score = 0;
+      for (const tk of tokens) {
+        const idx = t.indexOf(tk);
+        if (idx >= 0) {
+          // Weight rare-ish tokens (longer = rarer) higher
+          const occ = t.split(tk).length - 1;
+          score += occ * Math.max(1, tk.length / 3);
+        }
+      }
+      if (t.includes(phrase)) score += 6;
+      if (score > 0) {
+        ranked.push({ doc, page: p, score });
+      }
+    }
+  }
+  ranked.sort((a, b) => b.score - a.score);
+  return ranked.slice(0, k);
+}
+
+// Build a short snippet from a page around the first matching token.
+function buildSnippet(pageText, query, maxLen = 360) {
+  const q = (query || '').toLowerCase().trim();
+  const lower = pageText.toLowerCase();
+  let idx = lower.indexOf(q);
+  if (idx < 0) {
+    const tokens = q.split(/\W+/).filter((t) => t.length >= 3);
+    for (const tk of tokens) {
+      const i = lower.indexOf(tk);
+      if (i >= 0) {
+        idx = i;
+        break;
+      }
+    }
+  }
+  if (idx < 0) idx = 0;
+  const start = Math.max(0, idx - 80);
+  const end = Math.min(pageText.length, start + maxLen);
+  const slice = pageText.slice(start, end);
+  return (start > 0 ? '… ' : '') + slice + (end < pageText.length ? ' …' : '');
+}
+
 function classifyDocument(fileName) {
   const norm = normalizeFileName(fileName);
   for (const doc of DOCUMENT_TYPES) {
@@ -281,6 +872,197 @@ function classifyDocument(fileName) {
     }
   }
   return { type: 'Other / Unclassified', hasFinancialTable: false };
+}
+
+/* === AI defect narrative generator =================================
+ * Maps the user's title + draft text to a humanised auditor's
+ * narrative with relevant Section / Rule / Paragraph citations.
+ * Mirrors the concise 3-5 sentence style of the existing defect
+ * narratives across B.1/B.2/B.3 categories.
+ * ================================================================ */
+function generateDefectNarrative(title, userText, category) {
+  const seed = `${title} ${userText}`.toLowerCase();
+
+  // Citation rules — first match wins per topic
+  const topics = [
+    {
+      keys: ['cash', 'balance', 'retention', 'remit'],
+      citations: [
+        'Section 55-A of the APCS Act, 1964',
+        'Paragraph 6.12.1 of the Audit Manual for PACS',
+        "Society's bye-laws",
+      ],
+      framing:
+        'cash retention discipline and prompt remittance to the financing bank',
+    },
+    {
+      keys: ['loan', 'recovery', 'overdue', 'defaulter', 'recovery certificate'],
+      citations: [
+        'Section 30(xxii) of the APCS Act, 1964',
+        'Rule 41(C)(6) of the APCS Rules, 1964',
+        'Section 71 of the Act (recovery certificates)',
+      ],
+      framing:
+        'periodical review of overdue loans and timely legal action against defaulters',
+    },
+    {
+      keys: ['interest', 'rate', 'penal', 'iod'],
+      citations: [
+        'Paragraph 7.5 of the Audit Manual for PACS',
+        'Section 55-A of the APCS Act, 1964',
+      ],
+      framing:
+        'application of interest rates and reconciliation of interest collected against the simple-interest baseline',
+    },
+    {
+      keys: ['provision', 'npa', 'irac', 'doubtful', 'sub-standard', 'loss asset'],
+      citations: [
+        'NABARD IRAC norms on Income Recognition, Asset Classification and Provisioning',
+        'Section 55-A of the APCS Act, 1964',
+        'the Manual on Chart of Accounts (CAS) for PACS',
+      ],
+      framing:
+        'graded provisioning discipline and prudent recognition of credit risk',
+    },
+    {
+      keys: ['cost of management', 'staff cost', 'salary', 'manpower'],
+      citations: [
+        'Section 115-D of the APCS Act, 1964',
+        'NABARD norms governing Cost of Management of PACS',
+      ],
+      framing:
+        'compliance with the prescribed ceilings on Cost of Management (50%) and Staff Cost (30%) of Total Income',
+    },
+    {
+      keys: ['imbalance', 'asset', 'liability'],
+      citations: [
+        'Section 115-D of the APCS Act, 1964',
+        "NABARD's IRAC norms",
+      ],
+      framing: 'asset-liability matching and financial soundness',
+    },
+    {
+      keys: ['meeting', 'general body', 'managing committee', 'mc resolution'],
+      citations: [
+        'Section 30(2) of the APCS Act, 1964',
+        'Rule 22 of the APCS Rules, 1964',
+        "Society's bye-laws",
+      ],
+      framing:
+        'placement of accounts and audit reports before the General Body',
+    },
+    {
+      keys: ['register', 'book of account', 'ledger', 'voucher', 'authentic'],
+      citations: [
+        'Section 55-A of the APCS Act, 1964 read with Rules 58 and 59',
+        'Paragraph 6.12.2 of the Audit Manual for PACS',
+      ],
+      framing:
+        'maintenance and authentication of prescribed books, registers and vouchers',
+    },
+    {
+      keys: ['budget', 'business plan', 'bdp', 'expenditure'],
+      citations: [
+        'Section 30 of the APCS Act, 1964',
+        "NABARD's viability guidance for PACS",
+      ],
+      framing:
+        'preparation of an approved annual budget and business development plan',
+    },
+    {
+      keys: ['fraud', 'misappropriat', 'embezzle', 'pilfer'],
+      citations: [
+        'Section 60 of the APCS Act, 1964 (surcharge)',
+        'Indian Penal Code and Code of Criminal Procedure',
+        'Section 55-A of the Act',
+      ],
+      framing:
+        'safeguarding of Society funds and surcharge action for loss caused',
+    },
+    {
+      keys: ['report', 'audit defect', 'rectification'],
+      citations: [
+        'Section 50 of the APCS Act, 1964',
+        'Section 54 of the Act (Rectification of defects)',
+      ],
+      framing:
+        'rectification of defects noticed in the audit conducted under Section 50',
+    },
+    {
+      keys: ['sundry', 'debtor', 'creditor', 'reconciliation'],
+      citations: [
+        'Section 55-A of the APCS Act, 1964',
+        'the Manual on Chart of Accounts (CAS) for PACS',
+        'Paragraph 6.12.2 of the Audit Manual for PACS',
+      ],
+      framing:
+        'reconciliation of Sundry ledgers and integrity of receivable / payable classifications',
+    },
+    {
+      keys: ['share capital', 'reserve fund', 'capital'],
+      citations: [
+        'Section 45 of the APCS Act, 1964',
+        'Rule 36(A) of the APCS Rules, 1964',
+        "Society's bye-laws",
+      ],
+      framing:
+        'maintenance and utilisation of share capital and reserve funds',
+    },
+    {
+      keys: ['gst', 'tax', 'tds'],
+      citations: [
+        'Section 55-A of the APCS Act, 1964',
+        'the relevant taxation statutes',
+      ],
+      framing:
+        'statutory tax compliance and timely deposit of TDS / GST',
+    },
+  ];
+
+  let matched = null;
+  for (const t of topics) {
+    if (t.keys.some((k) => seed.includes(k))) {
+      matched = t;
+      break;
+    }
+  }
+
+  if (!matched) {
+    matched = {
+      citations: [
+        'Section 55-A of the APCS Act, 1964 read with Rules 58 and 59',
+        'Paragraph 6.12 of the Audit Manual for PACS',
+      ],
+      framing: 'sound governance and statutory compliance',
+    };
+  }
+
+  const categoryFraming = {
+    financial:
+      'a Financial Irregularity in the affairs of the Society',
+    accounting:
+      'an Accounting Irregularity in the books and records of the Society',
+    administrative:
+      'an Administrative Irregularity in the governance of the Society',
+  };
+  const catLabel = categoryFraming[category] || categoryFraming.financial;
+
+  const escalation =
+    'Failure to rectify shall attract direction by the Registrar under Section 54 of the APCS Act, 1964, and surcharge under Section 60 of the Act for any consequential loss to the Society.';
+
+  // Concise auditor's narrative — 3-5 sentences
+  const userObservation = userText.trim();
+  const opening = userObservation
+    ? userObservation
+    : `The Society has failed to maintain compliance in respect of "${title}".`;
+  const cite = matched.citations.join('; ');
+
+  const narrative = `${opening} This constitutes ${catLabel}, contrary to ${cite}. The defect undermines ${matched.framing}, and exposes the Chief Executive Officer and Managing Committee to responsibility. The Chief Executive Officer is hereby directed to undertake immediate corrective action, document the rectification in the Defect Rectification Register, and produce the rectified position at the next monthly audit. ${escalation}`;
+
+  return {
+    narrative,
+    citations: matched.citations,
+  };
 }
 
 /* === REQUIRED FILES SPEC ============================================
@@ -398,6 +1180,65 @@ export default function APCooperativeFinancialAnalyser() {
   const [totalCount, setTotalCount] = useState(0);
   const [currentStage, setCurrentStage] = useState('');
   const [activeView, setActiveView] = useState('dashboard');
+  // ----- Admin login gate (client-side only) -----
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [loginUser, setLoginUser] = useState('');
+  const [loginPass, setLoginPass] = useState('');
+  const [loginError, setLoginError] = useState('');
+
+  // ---------- Binary-encoded admin credentials (obfuscation, not security) ----------
+// Username: "USER"  -> 01010101 01010011 01000101 01010010
+// Password: "Pass@123" -> 01010000 01100001 01110011 01110011 01000000 00110001 00110010 00110011
+// (Whitespace inside the strings is ignored at compare time; line breaks are fine.)
+const ADMIN_USER_BIN = '01010101 01010011 01000101 01010010';
+const ADMIN_PASS_BIN =
+  '01010000 01100001 01110011 01110011' +
+  ' 01000000 00110001 00110010 00110011';
+
+// Convert a JS string to its binary representation (UTF-8 bytes, 8 bits each).
+// Returns space-separated 8-bit groups to match ADMIN_PASS_BIN format above.
+function textToBinary(text) {
+  if (text == null) return '';
+  // Encode as UTF-8 bytes first so non-ASCII characters stay stable.
+  const bytes = new TextEncoder().encode(String(text));
+  let out = '';
+  for (let i = 0; i < bytes.length; i++) {
+    if (i > 0) out += ' ';
+    out += bytes[i].toString(2).padStart(8, '0');
+  }
+  return out;
+}
+
+// Normalise both sides: strip all whitespace, lowercase hex isn't relevant here
+// (we compare bit-strings), but we do trim to avoid trailing-space false negatives.
+function normaliseBinary(s) {
+  return String(s).replace(/\s+/g, '').toLowerCase();
+}
+
+function checkBinaryCredentials(userInput, passInput) {
+  const u = normaliseBinary(textToBinary(userInput));
+  const p = normaliseBinary(textToBinary(passInput));
+  const eu = normaliseBinary(ADMIN_USER_BIN);
+  const ep = normaliseBinary(ADMIN_PASS_BIN);
+  return u === eu && p === ep;
+}
+
+function handleLogin(e) {
+  if (e) e.preventDefault();
+  if (checkBinaryCredentials(loginUser, loginPass)) {
+    setIsAuthenticated(true);
+    setLoginError('');
+  } else {
+    setLoginError('Invalid username or password.');
+  }
+}
+
+  function handleLoginReset() {
+    setLoginUser('');
+    setLoginPass('');
+    setLoginError('');
+  }
+
   const [missingFiles, setMissingFiles] = useState([]);
   const [fileTableData, setFileTableData] = useState({});
   const [isDragging, setIsDragging] = useState(false);
@@ -423,16 +1264,120 @@ export default function APCooperativeFinancialAnalyser() {
     {
       role: 'ai',
       content:
-        "Welcome to COOP·AUDIT·AI Legal Chat. Ask me about any section of the APCS Act 1964, APCS Rules 1964, NABARD norms, or paragraphs of the Audit Manual for PACS. Try: 'What is Section 54?' or 'Explain Rule 41(C)(6)'.",
+        "Welcome to COOP-AUDIT AI - LEGAL CHAT. Ask me about APCS Act & Rules, 1964 and also Case Laws for reference.",
     },
   ]);
   const [chatInput, setChatInput] = useState('');
   const [chatTyping, setChatTyping] = useState(false);
+  // ----- Live AI (Google Gemini) key, editable from the chat UI -----
+  const [aiKey, setAiKey] = useState(() => getGeminiKey());
+  const [showKeyPanel, setShowKeyPanel] = useState(false);
+  const [aiKeyDraft, setAiKeyDraft] = useState('');
+// ---- AI Key Test panel (live API vs. offline fallback) ----
+const [aiTestRunning, setAiTestRunning] = useState(false);
+const [aiTestResult, setAiTestResult] = useState(null);
+// shape: { mode: 'live' | 'offline' | 'error', ms: number, text: string, error?: string, question: string }
+const [aiTestQuestion, setAiTestQuestion] = useState(
+  'What is the surcharge procedure under Section 60 of the APCS Act, 1964, and how is the amount recovered?'
+);
+
+async function runAiKeyTest() {
+  const q = aiTestQuestion.trim();
+  if (!q) return;
+  setAiTestRunning(true);
+  setAiTestResult(null);
+
+  const t0 = performance.now();
+  const liveKey = hasGeminiKey();
+
+  if (!liveKey) {
+    // Offline path: call the same fallback the chat uses
+    try {
+      const { text } = answerWithCorpus(q);
+      const ms = Math.round(performance.now() - t0);
+      setAiTestResult({
+        mode: 'offline',
+        ms,
+        text: text.slice(0, 600) + (text.length > 600 ? '…' : ''),
+        question: q,
+        note: 'No API key found. Result is from the offline reference engine (LEGAL_KB + bundled PDF corpus if indexed).',
+      });
+    } catch (e) {
+      setAiTestResult({
+        mode: 'error',
+        ms: Math.round(performance.now() - t0),
+        text: '',
+        question: q,
+        error: e.message || String(e),
+      });
+    }
+    setAiTestRunning(false);
+    return;
+  }
+
+  // Live path: call the same two-pass agent the chat uses
+  try {
+    const { text } = await generateLegalAgentAnswer(q, []);
+    const ms = Math.round(performance.now() - t0);
+    setAiTestResult({
+      mode: 'live',
+      ms,
+      text: text.slice(0, 600) + (text.length > 600 ? '…' : ''),
+      question: q,
+    });
+  } catch (e) {
+    const ms = Math.round(performance.now() - t0);
+    const isNoKey = e && e.code === 'NO_API_KEY';
+    setAiTestResult({
+      mode: isNoKey ? 'offline' : 'error',
+      ms,
+      text: '',
+      question: q,
+      error: isNoKey
+        ? 'Key disappeared between check and call — try saving again.'
+        : (e.message || String(e)).slice(0, 300),
+    });
+  }
+  setAiTestRunning(false);
+}
+
+  function saveAiKey() {
+    const v = aiKeyDraft.trim();
+    try {
+      if (v) localStorage.setItem('COOP_GEMINI_KEY', v);
+      else localStorage.removeItem('COOP_GEMINI_KEY');
+    } catch (_) {
+      /* localStorage unavailable */
+    }
+    setAiKey(v);
+    setAiKeyDraft('');
+    setShowKeyPanel(false);
+  }
+
+  function clearAiKey() {
+    try {
+      localStorage.removeItem('COOP_GEMINI_KEY');
+    } catch (_) {
+      /* ignore */
+    }
+    setAiKey('');
+    setAiKeyDraft('');
+  }
   const [customDefects, setCustomDefects] = useState([]);
   const [customDefectDraft, setCustomDefectDraft] = useState({
     category: 'financial',
     title: '',
     narrative: '',
+  });
+  const [defectPreview, setDefectPreview] = useState(null); // { title, category, aiNarrative, citations }
+
+  // Legal reference corpus — bundled PDFs + user-uploaded references.
+  // corpusStatus: 'idle' | 'loading' | 'ready' | 'error'
+  const [corpus, setCorpus] = useState([]); // [{ id, name, pages: [{n, text}], source: 'bundled' | 'user' }]
+  const [corpusStatus, setCorpusStatus] = useState('idle');
+  const [corpusProgress, setCorpusProgress] = useState({
+    done: 0,
+    total: 0,
   });
 
   const financials = useMemo(() => {
@@ -553,15 +1498,15 @@ export default function APCooperativeFinancialAnalyser() {
     if (missingFiles.length === 0 && detectedFiles.length > 0) {
       merits.push({
         title:
-          'Complete Submission of Statutory Records & Schedules',
-        narrative: `The Society has produced the entire prescribed set of statutory financial statements, schedules and annexures for verification. This demonstrates compliance with Section 55-A of the APCS Act, 1964 read with Rules 58 and 59, under which the CEO and President are jointly responsible for maintenance and production of accounts. The diligent record-keeping is commended.`,
+          'Complete Submission of Statutory Records',
+        narrative: `All prescribed financial statements, schedules and annexures produced for verification — compliant with Section 55-A, APCS Act, 1964 r/w Rules 58 & 59. Record-keeping commended.`,
       });
     } else if (missingFiles.length > 0) {
       demerits.push({
         category: 'accounting',
         title:
-          'Incomplete System-Generated Reports — Paragraph 7.1, Audit Manual for PACS',
-        narrative: `The audit ZIP shows ${missingFiles.length} prescribed system-generated report(s) were not produced from the ERP module. Paragraph 7.1 of the Audit Manual for PACS requires the Trial Balance and all financial reports to be generated for the full set of accounts, authenticated by the Secretary, and preserved for seven years; Section 55-A of the APCS Act, 1964 makes the CEO and President jointly responsible for production of accounts. The CEO is directed to review ERP configuration, ensure Secretary authentication of each report, preserve all reports in soft and hard form, and produce the complete set at the next monthly audit; persistent failure attracts direction under Section 54.`,
+          'Non-Production of Statutory Reports — Para 7.1, Audit Manual',
+        narrative: `${missingFiles.length} prescribed report(s) not produced from ERP. Violation of Para 7.1, Audit Manual for PACS r/w Section 55-A, APCS Act, 1964. CEO directed to produce complete reports at next audit; non-compliance attracts Section 54 directions.`,
       });
     }
 
@@ -570,8 +1515,8 @@ export default function APCooperativeFinancialAnalyser() {
     if (auditResults.length > 0 && mismatched.length === 0) {
       merits.push({
         title:
-          'Material Accuracy & Mathematical Integrity of Financial Statements',
-        narrative: `All primary financial statements — Receipts & Payments, Trail Balance, Trading Account, P&L Account, P&L Appropriation and Balance Sheet — are correctly tallied with matching debit/credit and asset/liability totals. This conforms to double-entry principles under the CAS Manual and the books-of-account obligations under Section 55-A of the APCS Act, 1964. The CEO and accounting staff are commended for the integrity of the ERP-maintained ledger.`,
+          'Financial Statements — Mathematically Accurate',
+        narrative: `All primary financial statements tally correctly. Double-entry principles under CAS Manual and Section 55-A, APCS Act, 1964 duly complied. Ledger integrity commended.`,
       });
     }
 
@@ -579,24 +1524,39 @@ export default function APCooperativeFinancialAnalyser() {
     mismatched.forEach((r) => {
       demerits.push({
         category: 'accounting',
-        title: `${r.statementType} — Non-Tallying of Material Grand Totals`,
-        narrative: `The ${r.statementType} shows a discrepancy of ₹${fmt(r.difference)} between ${r.label1} (₹${fmt(r.amount1)}) and ${r.label2} (₹${fmt(r.amount2)}). This non-tallying breaches the double-entry principles of the CAS Manual and Section 55-A of the APCS Act, 1964, and undermines the reliability of consequent statements. The CEO is directed under Section 54 to reconcile the account heads and submit the corrected statement at the next monthly audit; failure may be reported to the Registrar.`,
+        title: `${r.statementType} — Non-Tallying`,
+        narrative: `Discrepancy of ₹${fmt(r.difference)} between ${r.label1} (₹${fmt(r.amount1)}) and ${r.label2} (₹${fmt(r.amount2)}). Breach of CAS Manual and Section 55-A, APCS Act, 1964. CEO directed u/s 54 to reconcile and submit corrected statement.`,
       });
     });
+
+    // 3b) TRAIL BALANCE — Module–FAS differences parked under named product heads (e-Audit SOP, Auditor Login)
+    const hasTrailBalance =
+      auditResults.some((r) => r.statementType === 'Trail Balance') ||
+      detectedFiles.some(
+        (f) => /trail\s*balance/i.test(f?.label || f?.name || '')
+      );
+    if (hasTrailBalance) {
+      demerits.push({
+        category: 'accounting',
+        title:
+          'Trail Balance — Unreconciled Module–FAS Differences Parked (Auditor SOP)',
+        narrative: `Module–FAS differences under the named product heads — Share Capital, Deposits and Loans — are liable to stand parked in the Trail Balance, leaving such balances unverified. Per e-Audit SOP, Auditor Login (FAS ▸ Reports ▸ Module & FAS), the prior-year closing TB must tally with the current-year opening TB and all module–FAS differences cleared by raising a ticket to NLPSV. CEO directed u/s 54, APCS Act, 1964 r/w Section 55-A to reconcile and clear the parked differences before finalisation of accounts.`,
+      });
+    }
 
     // 4) ANNEXURE-8 (Total Income / Cost of Management) — Section 115-D
     const annex8 = auditNarratives.find((n) => n.key === 'annexure8');
     if (annex8 && annex8.status === 'merit') {
       merits.push({
         title:
-          'Sound Operational Performance — Compliance with Section 115-D & NABARD Norms',
+          'Operational Performance — Section 115-D Compliant',
         narrative: annex8.narrative,
       });
     } else if (annex8 && annex8.status === 'demerit') {
       demerits.push({
         category: 'financial',
         title:
-          'Cost of Management & Manpower Norms — Non-Compliance with Section 115-D',
+          'Cost of Management — Section 115-D Non-Compliance',
         narrative: annex8.narrative,
       });
     }
@@ -606,7 +1566,7 @@ export default function APCooperativeFinancialAnalyser() {
     if (annex11 && annex11.status === 'merit') {
       merits.push({
         title:
-          'Diligent Recovery & Legal Action Coverage on Overdue Loans',
+          'Recovery & Legal Action — Adequate Coverage',
         narrative: annex11.narrative,
       });
     } else if (annex11 && annex11.status === 'demerit') {
@@ -625,14 +1585,14 @@ export default function APCooperativeFinancialAnalyser() {
     if (annex8Pct && annex8Pct.status === 'merit') {
       merits.push({
         title:
-          'Positive Staff Cost % and COM % Ratios — Annexure-8',
+          'Staff Cost & COM Ratios — Within Norms',
         narrative: annex8Pct.narrative,
       });
     } else if (annex8Pct && annex8Pct.status === 'demerit') {
       demerits.push({
         category: 'financial',
         title:
-          'Negative Staff Cost % / COM % to Total Income — Section 115-D',
+          'Staff Cost / COM Exceeds Norms — Section 115-D',
         narrative: annex8Pct.narrative,
       });
     }
@@ -642,31 +1602,31 @@ export default function APCooperativeFinancialAnalyser() {
     if (annex5 && annex5.status === 'merit') {
       merits.push({
         title:
-          'No Financial Imbalance — Annexure-5 (Sound Asset-Liability Matching)',
+          'Annexure-5 — No Financial Imbalance',
         narrative: annex5.narrative,
       });
     } else if (annex5 && annex5.status === 'demerit') {
       demerits.push({
         category: 'financial',
         title:
-          'Financial Imbalance Detected — Annexure-5 (A − B Calculation)',
+          'Financial Imbalance — Annexure-5',
         narrative: annex5.narrative,
       });
     }
 
-    // 5d) SCHEDULE-9 — Provisions on NPAs, Overdue Interest, Bad & Doubtful Sundry Debtors
+    // 5d) SCHEDULE-9 — Provisions on NPAs
     const sched9 = auditNarratives.find((n) => n.key === 'schedule9');
     if (sched9 && sched9.status === 'merit') {
       merits.push({
         title:
-          'Adequate Provisioning under NABARD IRAC Norms — Schedule-9',
+          'Schedule-9 — NABARD IRAC Provisioning Adequate',
         narrative: sched9.narrative,
       });
     } else if (sched9 && sched9.status === 'demerit') {
       demerits.push({
         category: 'accounting',
         title:
-          'Provisioning Defects under Schedule-9 — NABARD IRAC Non-Compliance',
+          'Schedule-9 — IRAC Provisioning Deficiency',
         narrative: sched9.narrative,
       });
     }
@@ -679,26 +1639,26 @@ export default function APCooperativeFinancialAnalyser() {
       demerits.push({
         category: 'financial',
         title:
-          'Sundry Debtors Aged > 3 Years (Non-Realisable) — Schedule-16B · NABARD IRAC Non-Compliance',
+          'Schedule-16B — Non-Realisable Sundry Debtors (>3 Years)',
         narrative: sched16b.narrative,
       });
     }
 
-    // 5e) BALANCE SHEET — Sundry Debtors & Sundry Creditors closing balance integrity
+    // 5e) BALANCE SHEET — Sundry Debtors & Sundry Creditors
     const sdc = auditNarratives.find(
       (n) => n.key === 'sundryDebtorsCreditors'
     );
     if (sdc && sdc.status === 'merit') {
       merits.push({
         title:
-          'Sundry Debtors & Sundry Creditors — Clean Closing Balances',
+          'Sundry Debtors & Creditors — Balances Clean',
         narrative: sdc.narrative,
       });
     } else if (sdc && sdc.status === 'demerit') {
       demerits.push({
         category: 'accounting',
         title:
-          'Negative Closing Balance under Sundry Debtors / Creditors — Section 55-A',
+          'Sundry Debtors/Creditors — Negative Closing Balance (Section 55-A)',
         narrative: sdc.narrative,
       });
     }
@@ -710,14 +1670,14 @@ export default function APCooperativeFinancialAnalyser() {
     if (sch16b && sch16b.status === 'merit') {
       merits.push({
         title:
-          'Sundry Debtors Ageing — No Dues Outstanding Beyond 3 Years (Schedule-16B)',
+          'Schedule-16B — No Dues Beyond 3 Years',
         narrative: sch16b.narrative,
       });
     } else if (sch16b && sch16b.status === 'demerit') {
       demerits.push({
         category: 'financial',
         title:
-          'Sundry Debtors Aged Above 3 Years (Schedule-16B) — Section 30(xxii) r/w Rule 41(C)(6)',
+          'Schedule-16B — Sundry Debtors >3 Years (Section 30(xxii) r/w Rule 41(C)(6))',
         narrative: sch16b.narrative,
       });
     }
@@ -736,15 +1696,15 @@ export default function APCooperativeFinancialAnalyser() {
       if (cashBookAnalysis.nonCompliantDays === 0) {
         merits.push({
           title:
-            'Cash on Hand — Compliance with Bye-law Retention Limit',
-          narrative: `Cash Book verification shows the Cash on Hand closing balance remained within the bye-law limit of ${fmtR(cashBookAnalysis.threshold)} on all ${cashBookAnalysis.totalDays} day(s) audited. The Managing Committee and CEO are commended for cash-retention discipline, which mitigates risks of misappropriation and idle cash and safeguards member funds.`,
+            'Cash Retention — Within Bye-law Limit',
+          narrative: `Cash on Hand remained within the bye-law limit of ${fmtR(cashBookAnalysis.threshold)} on all ${cashBookAnalysis.totalDays} day(s) audited. Compliance with Para 6.12.1, Audit Manual. Commended.`,
         });
       } else {
         demerits.push({
           category: 'financial',
           title:
-            'Cash Balances Not Promptly Remitted into Bank Accounts — Interest Penalty @ 12% p.a.',
-          narrative: `Cash on Hand closing balances exceeded the bye-law limit of ${fmtR(cashBookAnalysis.threshold)} on ${cashBookAnalysis.nonCompliantDays} of ${cashBookAnalysis.totalDays} day(s); peak balance ${fmtR(cashBookAnalysis.highestCB)} on ${cashBookAnalysis.highestDate}. Notional interest at 12% p.a. on the excess aggregates to ${fmtR(cashBookAnalysis.totalInterest)}. Retention of heavy cash balances breaches Para 6.12.1 of the Audit Manual for PACS and the Society's bye-laws, exposing it to misappropriation and idle-cash risks. The CEO shall remit excess cash to the financing DCC Bank on the same working day, strengthen internal controls, and report compliance at the next audit; surcharge under Section 60 may be examined.`,
+            'Excess Cash Retention — Interest Penalty @ 12% p.a.',
+          narrative: `Cash on Hand exceeded bye-law limit of ${fmtR(cashBookAnalysis.threshold)} on ${cashBookAnalysis.nonCompliantDays} of ${cashBookAnalysis.totalDays} day(s); peak ${fmtR(cashBookAnalysis.highestCB)} on ${cashBookAnalysis.highestDate}. Notional interest on excess: ${fmtR(cashBookAnalysis.totalInterest)}. Violation of Para 6.12.1, Audit Manual. CEO directed to remit excess cash promptly; surcharge u/s 60 may be examined.`,
         });
       }
     }
@@ -761,60 +1721,62 @@ export default function APCooperativeFinancialAnalyser() {
         const isMerit = Math.abs(a.netDiscrepancy) < 1;
         if (isMerit) {
           merits.push({
-            title: `Loan Recoveries — ${a.fileName} — Interest Tally with Simple Interest Baseline`,
-            narrative: `Loan Recoveries verification of "${a.fileName}" against the simple-interest baseline [P × R × Days ÷ 36500] shows actual interest tallies with expected. Across ${a.records.length} record(s), Expected ${fmtR2(a.totalExpected)} vs Actual ${fmtR2(a.totalActual)}, net discrepancy ${fmtR2(a.netDiscrepancy)}. The banking software is configured correctly in conformity with the CAS Manual; the CEO is commended for ledger discipline on this batch.`,
+            title: `Loan Recoveries — ${a.fileName} — Interest Tallied`,
+            narrative: `Interest verification of "${a.fileName}" against simple-interest baseline: ${a.records.length} record(s), Expected ${fmtR2(a.totalExpected)} vs Actual ${fmtR2(a.totalActual)}, discrepancy ${fmtR2(a.netDiscrepancy)}. CAS Manual compliant. Commended.`,
           });
         } else {
           demerits.push({
             category: 'financial',
-            title: `Loan Recoveries — ${a.fileName} — Interest Recovery Discrepancy / Hidden Penal Charges`,
-            narrative: `Loan Recoveries verification of "${a.fileName}" against the simple-interest baseline [P × R × Days ÷ 36500] reveals a net discrepancy of ${fmtR2(a.netDiscrepancy)} across ${a.records.length} record(s) — Expected ${fmtR2(a.totalExpected)} vs Actual ${fmtR2(a.totalActual)}. ${a.netDiscrepancy > 0 ? 'The excess suggests hidden penal/overdue interest applied on accounts settled past due date.' : 'The shortfall suggests under-recovery or missed interest accruals.'} This breaches the income-recognition principles of the CAS Manual and Section 55-A of the APCS Act, 1964. The CEO shall reconcile postings on the affected accounts, restore correct entries with member consent for any genuine penal element, and report rectification at the next monthly audit; persistent non-compliance attracts direction under Section 54.`,
+            title: `Loan Recoveries — ${a.fileName} — Interest Discrepancy`,
+            narrative: `Interest verification of "${a.fileName}": discrepancy of ${fmtR2(a.netDiscrepancy)} across ${a.records.length} record(s) — Expected ${fmtR2(a.totalExpected)} vs Actual ${fmtR2(a.totalActual)}. ${a.netDiscrepancy > 0 ? 'Excess suggests hidden penal/overdue interest.' : 'Shortfall suggests under-recovery.'} Breach of CAS Manual and Section 55-A, APCS Act, 1964. CEO directed to reconcile u/s 54.`,
           });
         }
       });
     }
 
-    // 5h) Custom defects added via Defect Sheet Generator view
+    // 6) STANDARD RECURRING DEMERITS (per Audit Manual & APCS Act)
+
+    // 6-zero) AUDITOR'S SCOPE RESERVATION
+    demerits.push({
+      category: 'administrative',
+      title:
+        "Auditor's Scope Reservation — Sections 50, 55-A, 60, APCS Act, 1964",
+      narrative: `Audit conducted u/s 50, APCS Act, 1964 based on records produced by the Society. Non-availability of primary records, suppression of facts, or absence of vouchers may leave irregularities undiscernible — not attributable to the auditor. Responsibility for maintenance and production of books rests on the Managing Committee and CEO u/s 55-A r/w Rules 58 & 59. Subsequent discovery of misappropriation or fraud attracts surcharge u/s 60 and directions u/s 54.`,
+    });
+
+    // 6-pre) Scope limitation on interest verification
+    demerits.push({
+      category: 'administrative',
+      title:
+        'Interest Verification — Scope Limitation (Para 7.4 & 7.5, Audit Manual)',
+      narrative: `Interest on loans not verified with full assurance: (a) interest component editable beyond Secretary/System Administrator (Para 7.4), (b) audit-trail log of rate changes not produced (Para 7.5). CEO personally responsible for any resulting loss; surcharge u/s 60 applicable. Managing Committee directed to restrict editing access and produce audit log.`,
+    });
+
+    // 6a) GB discussion — Section 30, Rule 22
+    demerits.push({
+      category: 'administrative',
+      title:
+        'Accounts Not Placed Before General Body — Section 30(2) r/w Rule 22',
+      narrative: `Annual accounts, audit reports and defaulters' list not demonstrated as placed before the General Body u/s 30(2) r/w Rule 22. Managing Committee to convene GB, record resolutions and produce minute book; non-compliance attracts Section 50(5).`,
+    });
+
+    // 6c+6d) Managing Committee governance
+    demerits.push({
+      category: 'administrative',
+      title:
+        'Absence of BDP, Annual Budget & Defect Rectification Register — Sections 30, 54',
+      narrative: `No Business Development Plan or GB-approved annual budget prepared — violation of Section 30, APCS Act and NABARD viability norms. Defect Rectification Register not maintained — violation of Section 54. Managing Committee directed to prepare BDP, annual budget, and maintain Defect Rectification Register for production at next audit.`,
+    });
+
+    // 7) USER-ADDED CUSTOM DEFECTS — appended at the END so they
+    //    fall AFTER the auto-generated defects within their respective
+    //    B.1 / B.2 / B.3 categories.
     customDefects.forEach((d) => {
       demerits.push({
         category: d.category,
         title: d.title,
         narrative: d.narrative,
       });
-    });
-
-    // 6) STANDARD RECURRING DEMERITS (per Audit Manual & APCS Act)
-
-    // 6-zero MERGED) AUDITOR'S SCOPE RESERVATION — Sections 50, 51, 52, 54, 55-A, 60 + Audit Manual
-    demerits.push({
-      category: 'administrative',
-      title:
-        "Auditor's Scope Reservation — Non-Production of Records & Society's Sole Responsibility (Sections 50, 51, 52, 54, 55-A, 60 APCS Act, 1964)",
-      narrative: `The present audit has been conducted under Section 50 of the APCS Act, 1964 on the basis of records made available and submitted by the Society for verification. Certain issues remain not fully discernible owing to (a) non-availability / non-production of primary records, (b) suppression of material facts, and (c) absence of supporting vouchers and documents at the time of audit. Accordingly, any irregularities that may subsequently come to light are not attributable to any lapse on the part of the auditor. The responsibility for maintaining proper books of account, registers, vouchers and primary documents — and for producing the same before the auditor — rests solely on the Managing Committee, the Chief Executive Officer and the staff of the Society under Section 55-A of the APCS Act, 1964 read with Rules 58 and 59 of the Rules, the CAS Manual, and Paragraphs 6.12.2, 6.12.3 and 7.1 of the Audit Manual for PACS. Should any subsequent inquiry under Section 51 or inspection under Section 52 reveal misappropriation, fraud or loss for this audit period, the CEO and Managing Committee shall be held responsible and liable to surcharge under Section 60, in addition to disciplinary, criminal and other action under the APCS Act, IPC and CrPC; the Registrar may further issue rectification directions under Section 54.`,
-    });
-
-    // 6-pre) Scope limitation on interest verification — Para 7.4 & 7.5, Audit Manual + §60 APCS Act
-    demerits.push({
-      category: 'administrative',
-      title:
-        'Limitation of Audit Scope on Interest Collection — Editable Interest Component (Para 7.4 & 7.5, Audit Manual for PACS)',
-      narrative: `Interest collection on loans and advances could not be verified with full assurance because (a) the interest component in the loans module is editable by users beyond the Secretary / System Administrator, contrary to Paragraph 7.4 of the Audit Manual for PACS, and (b) the audit-trail log of interest-rate changes required under Paragraph 7.5 was not produced. Should any misappropriation or irregularity in the interest component subsequently come to light for this audit period, the Chief Executive Officer shall be held personally responsible for the resulting loss and liable to surcharge under Section 60 of the APCS Act, 1964, in addition to disciplinary and criminal action under the APCS Act, IPC and CrPC. The Managing Committee shall (i) restrict interest-component editing to the Secretary / System Administrator under Para 7.4, (ii) configure a tamper-proof audit-trail log of interest changes, and (iii) produce the corrected access matrix and audit log at the next monthly audit.`,
-    });
-
-    // 6a) GB discussion of accounts and audit reports — Section 30, Rule 22
-    demerits.push({
-      category: 'administrative',
-      title:
-        'Audit Reports & Annual Accounts Not Placed Before General Body — Section 30(2) r/w Rule 22',
-      narrative: `The annual accounts, audit reports and defaulters' list have not been demonstrated as placed before, and discussed by, the General Body as required under Section 30(2) of the APCS Act, 1964 read with Rule 22 of the Rules. The General Body is the supreme democratic forum of the cooperative; non-placement undermines member accountability and corrective action on audit defects. The Managing Committee shall convene the General Body, record formal resolutions on each defect, and produce the minute book at the next monthly audit; failure attracts the cessation provisions of Section 50(5).`,
-    });
-
-    // 6c+6d MERGED) Managing Committee governance failures — BDP + Budget + Defect Rectification Register
-    demerits.push({
-      category: 'administrative',
-      title:
-        'Managing Committee Governance — Absence of Business Development Plan, Annual Budget & Defect Rectification Register (Sections 30, 54 APCS Act, 1964)',
-      narrative: `The Society has failed in two material governance duties of the Managing Committee. First, neither a Business Development Plan for sustainable growth nor an annual budget approved by the General Body has been prepared, contrary to Section 30 of the APCS Act, 1964 and NABARD's viability guidance for PACS — expenditure incurred during the period therefore lacks a duly approved financial framework. Second, the Defect Rectification Register documenting action taken on defects from previous audits has not been maintained, breaching Section 54 of the Act which requires the Society to act on defects within the time specified by the Registrar, and the procedural directions of the Audit Manual for PACS. The Managing Committee is directed to (i) prepare and place before the General Body a five-year Business Development Plan (covering credit growth, non-credit diversification, recovery strategy and CoM discipline under Section 115-D) and the annual budget for the ensuing year, and (ii) maintain the Defect Rectification Register in the prescribed form with documented action-taken-reports; both shall be produced at the next monthly audit.`,
     });
 
     // Compile audit date and society
@@ -2831,6 +3793,122 @@ export default function APCooperativeFinancialAnalyser() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cashBalanceThreshold]);
 
+  // Lazy-load the bundled legal reference corpus the first time the
+  // user opens AI Legal Chat. Already-loaded docs are not re-fetched.
+  useEffect(() => {
+    if (activeView !== 'aichat') return;
+    if (corpusStatus === 'loading' || corpusStatus === 'ready') return;
+    let cancelled = false;
+    (async () => {
+      setCorpusStatus('loading');
+      setCorpusProgress({ done: 0, total: BUNDLED_LEGAL_REFS.length });
+      const loaded = [];
+      for (let i = 0; i < BUNDLED_LEGAL_REFS.length; i++) {
+        const ref = BUNDLED_LEGAL_REFS[i];
+        try {
+          const resp = await fetch(ref.url);
+          if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+          const buffer = await resp.arrayBuffer();
+          const parsed = await parsePdfArrayBufferToPages(
+            buffer,
+            ref.name
+          );
+          if (cancelled) return;
+          loaded.push({
+            id: ref.id,
+            name: ref.name,
+            pages: parsed.pages,
+            source: 'bundled',
+          });
+          setCorpusProgress({
+            done: i + 1,
+            total: BUNDLED_LEGAL_REFS.length,
+          });
+        } catch (e) {
+          console.error('Failed to load ref', ref.name, e);
+        }
+      }
+      if (!cancelled) {
+  setCorpus(loaded);
+  setCorpusStatus(loaded.length > 0 ? 'ready' : 'empty');
+}
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeView]);
+
+  async function handleAddUserReference(file) {
+    if (!file || !/\.pdf$/i.test(file.name)) return;
+    try {
+      const buffer = await file.arrayBuffer();
+      const parsed = await parsePdfArrayBufferToPages(
+        buffer,
+        file.name
+      );
+      setCorpus((prev) => [
+        ...prev,
+        {
+          id: 'user-' + Date.now(),
+          name: file.name,
+          pages: parsed.pages,
+          source: 'user',
+        },
+      ]);
+    } catch (e) {
+      console.error('Failed to parse user reference', e);
+      alert(
+        `Could not parse "${file.name}" as a PDF. Please upload a valid PDF file.`
+      );
+    }
+  }
+
+  function handleRemoveUserReference(id) {
+    setCorpus((prev) => prev.filter((d) => d.id !== id));
+  }
+
+  // Compose an AI-narrated answer from corpus matches + the static
+  // knowledge base. If we have indexed references and find matches,
+  // we craft a narrative quoting top excerpts with citations.
+  function answerWithCorpus(query) {
+    if (corpus.length === 0) {
+      // Fallback to static KB
+      return {
+        text: answerLegalQuery(query),
+        citations: [],
+      };
+    }
+    const hits = searchLegalCorpus(corpus, query, 4);
+    if (hits.length === 0) {
+      return {
+        text:
+          'No relevant excerpts were found in the bundled reference documents (APCS Act 1964, APCS Rules 1964, Audit Manual for PACS, Handbook on Statutory Functions, Handbook on Cooperative Laws). ' +
+          answerLegalQuery(query),
+        citations: [],
+      };
+    }
+    // Build narrative
+    const lead = `Based on a search of the ${corpus.length} reference document(s) indexed (${corpus
+      .map((d) => d.name)
+      .join('; ')}), the following passages are most relevant to your query:`;
+    const citations = hits.map((h) => ({
+      doc: h.doc.name,
+      page: h.page.n,
+      snippet: buildSnippet(h.page.text, query, 360),
+      score: Math.round(h.score),
+    }));
+    // Concise synthesised narrative on top
+    const synth = answerLegalQuery(query);
+    return {
+      text:
+        lead +
+        '\n\n— Synthesised narrative —\n' +
+        synth,
+      citations,
+    };
+  }
+
   // Column-aware parser for PACS Loan Recoveries Report.
   // Layout: PDF is rotated 90° (landscape). Each x-position is a separate
   // voucher/transaction. Each y-position is a column (Loan No, GL No,
@@ -4131,6 +5209,92 @@ tr.overdue { background: #fff0f0; }
     win.document.close();
   }
 
+  // ---- Login gate: block the whole app until admin signs in ----
+  if (!isAuthenticated) {
+    return (
+      <div className="min-h-screen flex items-center justify-center p-4 relative font-sans overflow-y-auto">
+        <form
+          onSubmit={handleLogin}
+          className="glossy-border-box w-full max-w-sm p-6 text-center relative z-10 my-auto"
+        >
+          {/* Brand mark — VIBGYOR rainbow ring; height scales to viewport so the card always fits */}
+          <div className="flex justify-center mb-2">
+            <div className="relative overflow-hidden rounded-[28px] shadow-[0_0_40px_rgba(52,211,153,0.4)] backdrop-blur-xl">
+              <img
+                src={logoImage}
+                alt="COOP - AUDIT AI Logo"
+                className="block rounded-[28px] w-auto h-auto max-h-[18vh] max-w-[170px]"
+              />
+            </div>
+          </div>
+
+          <h1 className="font-display text-xl sm:text-2xl font-black tracking-[0.12em] whitespace-nowrap leading-none">
+            <span style={{ color: '#10b981' }}>COOP</span>
+            <span className="text-slate-400">·</span>
+            <span style={{ color: '#1e3a8a' }}>AUDIT</span>
+            <span className="text-slate-400">·</span>
+            <span style={{ color: '#7c3aed' }}>AI</span>
+          </h1>
+          <p className="text-[10px] uppercase tracking-[0.35em] text-slate-400 font-mono-techy mt-1 mb-4">
+            Admin Login
+          </p>
+
+          <div className="space-y-3 text-left">
+            <div>
+              <label className="block text-[10px] uppercase tracking-[0.25em] text-slate-500 font-mono-techy font-bold mb-1">
+                Username
+              </label>
+              <input
+                type="text"
+                value={loginUser}
+                onChange={(e) => setLoginUser(e.target.value)}
+                autoFocus
+                placeholder="Enter username"
+                className="w-full bg-white border border-slate-200 rounded-xl px-4 py-2.5 text-sm text-slate-800 placeholder:text-slate-400 focus:outline-none vibgyor-input-focus"
+              />
+            </div>
+            <div>
+              <label className="block text-[10px] uppercase tracking-[0.25em] text-slate-500 font-mono-techy font-bold mb-1">
+                Password
+              </label>
+              <input
+                type="password"
+                value={loginPass}
+                onChange={(e) => setLoginPass(e.target.value)}
+                placeholder="Enter password"
+                className="w-full bg-white border border-slate-200 rounded-xl px-4 py-2.5 text-sm text-slate-800 placeholder:text-slate-400 focus:outline-none vibgyor-input-focus"
+              />
+            </div>
+          </div>
+
+          {loginError && (
+            <p className="mt-3 text-xs font-bold text-rose-600">{loginError}</p>
+          )}
+
+          <div className="mt-5 flex gap-3">
+            <button
+              type="submit"
+              className="flex-1 inline-flex items-center justify-center gap-2 px-5 py-2.5 rounded-xl bg-black text-white text-sm font-bold tracking-wide shadow-[0_4px_16px_rgba(0,0,0,0.25)] hover:bg-slate-800 transition-all duration-200"
+            >
+              Login
+            </button>
+            <button
+              type="button"
+              onClick={handleLoginReset}
+              className="flex-1 inline-flex items-center justify-center gap-2 px-5 py-2.5 rounded-xl bg-white text-slate-700 text-sm font-bold tracking-wide border border-slate-200 shadow-[0_1px_3px_rgba(0,0,0,0.06)] hover:border-violet-300 hover:text-violet-600 transition-all duration-200"
+            >
+              Reset
+            </button>
+          </div>
+
+          <p className="mt-5 text-[9px] uppercase tracking-[0.3em] text-slate-400 font-mono-techy">
+            Authorized admin access only
+          </p>
+        </form>
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-950 via-[#031b1a] to-emerald-950 flex overflow-hidden text-white relative font-sans">
       <aside className="w-[320px] min-h-screen bg-slate-950/60 backdrop-blur-2xl text-white flex flex-col border-r border-white/10 relative overflow-hidden">
@@ -4140,33 +5304,43 @@ tr.overdue { background: #fff0f0; }
 
         <div className="relative p-8 border-b border-white/10">
           <div className="flex flex-col items-center text-center gap-5">
-            <LogoMark />
-
+            <img
+              src={auditLogo}
+              alt="Audit Management System logo"
+              className="w-28 h-28 object-contain drop-shadow-lg"
+            />
             <div className="text-center w-full">
+              <h1 className="font-display text-[clamp(1.25rem,5.5vw,1.75rem)] font-black tracking-[0.08em] whitespace-nowrap leading-none">
+                <span style={{ color: '#10b981' }}>COOP</span>
+                <span className="text-slate-400">·</span>
+                <span style={{ color: '#1e3a8a' }}>AUDIT</span>
+                <span className="text-slate-400">·</span>
+                <span style={{ color: '#7c3aed' }}>AI</span>
+              </h1>
+              <div className="mt-2 text-[9px] uppercase tracking-[0.35em] font-mono-techy whitespace-nowrap">
+                <span style={{ color: '#10b981' }}>Cooperative</span>
+                <span className="text-slate-400"> · </span>
+                <span style={{ color: '#1e3a8a' }}>Audit</span>
+                <span className="text-slate-400"> · </span>
+                <span style={{ color: '#7c3aed' }}>Intelligence</span>
+              </div>
+
               {societyName && (
-                <div className="relative mb-4 px-4 py-3 rounded-2xl bg-gradient-to-br from-emerald-500/15 via-cyan-500/10 to-violet-500/15 border border-emerald-400/40 backdrop-blur-md anim-slide-up overflow-hidden shadow-[0_0_25px_rgba(52,211,153,0.25)]">
+                <div className="relative mt-4 px-4 py-3 rounded-2xl bg-gradient-to-br from-emerald-500/15 via-cyan-500/10 to-violet-500/15 border border-emerald-400/40 backdrop-blur-md anim-slide-up overflow-hidden shadow-[0_0_25px_rgba(52,211,153,0.25)]">
                   <div className="absolute inset-0 cyber-grid opacity-30 pointer-events-none" />
-                  <div className="absolute -top-8 -right-8 w-20 h-20 rounded-full bg-yellow-300/20 blur-2xl pointer-events-none animate-pulse" />
 
                   <div className="relative">
-                    <div className="text-[10px] uppercase tracking-[0.35em] text-emerald-300/90 mb-2 font-mono-techy font-bold flex items-center gap-1.5">
-                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-300 animate-pulse" />
-                      Uploaded File Name
+                    <div className="text-[10px] uppercase tracking-[0.35em] text-emerald-300/90 mb-2 font-mono-techy font-bold flex items-center justify-center gap-1.5">
+                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-300" />
+                      Uploaded File
                     </div>
 
-                    <div className="font-display font-black text-base tracking-wide break-words leading-tight gradient-text-fire">
+                    <div className="font-display font-black text-sm tracking-wide break-words leading-tight gradient-text-fire">
                       {societyName}
                     </div>
                   </div>
                 </div>
               )}
-
-              <h1 className="font-display text-[clamp(1.25rem,5.5vw,1.75rem)] font-black tracking-[0.08em] gradient-text whitespace-nowrap leading-none">
-                COOP·AUDIT·AI
-              </h1>
-              <div className="mt-2 text-[9px] uppercase tracking-[0.35em] text-cyan-300/50 font-mono-techy whitespace-nowrap">
-                Cooperative · Audit · Intelligence
-              </div>
             </div>
           </div>
         </div>
@@ -4219,9 +5393,9 @@ tr.overdue { background: #fff0f0; }
         </div>
       </aside>
 
-      <main className="flex-1 p-8 overflow-auto">
-        <div className="max-w-7xl mx-auto space-y-6">
-          <div className="relative overflow-hidden bg-slate-900/50 backdrop-blur-2xl rounded-[32px] border border-emerald-400/20 p-8 shadow-[0_0_80px_rgba(52,211,153,0.15)] anim-slide-up">
+      <main className="flex-1 p-6 overflow-auto">
+        <div className="max-w-7xl mx-auto space-y-5">
+          <div className="relative overflow-hidden bg-slate-900/50 backdrop-blur-2xl rounded-[32px] border border-emerald-400/20 p-6 shadow-[0_0_80px_rgba(52,211,153,0.15)] anim-slide-up">
             <div className="absolute inset-0 cyber-grid opacity-60 pointer-events-none" />
             <div className="absolute -top-32 -right-24 w-72 h-72 rounded-full bg-emerald-400/20 blur-3xl pointer-events-none" />
             <div className="absolute -bottom-32 -left-24 w-72 h-72 rounded-full bg-cyan-400/20 blur-3xl pointer-events-none" />
@@ -4229,10 +5403,13 @@ tr.overdue { background: #fff0f0; }
 
             <div className="relative flex flex-col lg:flex-row items-center justify-between gap-8">
               <div className="flex items-center gap-5">
-                <div className="relative anim-float">
-                  <div className="absolute inset-0 bg-emerald-400 blur-2xl opacity-60" />
-                  <div className="relative w-16 h-16 rounded-2xl bg-gradient-to-br from-emerald-400 via-cyan-400 to-yellow-400 flex items-center justify-center shadow-[0_0_40px_rgba(52,211,153,0.6)]">
-                    <FileArchive className="w-8 h-8 text-slate-950" strokeWidth={2.5} />
+                <div className="relative flex-shrink-0">
+                  <div className="relative overflow-hidden rounded-[28px] shadow-[0_0_40px_rgba(52,211,153,0.4)] backdrop-blur-xl">
+                    <img
+                      src={logoImage}
+                      alt="COOP - AUDIT AI Logo"
+                      className="block rounded-[28px] w-auto h-auto max-w-[120px] lg:max-w-[140px]"
+                    />
                   </div>
                 </div>
 
@@ -4318,38 +5495,34 @@ tr.overdue { background: #fff0f0; }
           )}
 
           {/* MISSING banner — list of missing files in blinking style */}
-          {!loading && missingFiles.length > 0 && (
-            <div className="relative overflow-hidden rounded-[28px] border-2 border-rose-400/60 bg-gradient-to-r from-rose-500/15 via-fuchsia-500/10 to-rose-500/15 backdrop-blur-xl p-6 shadow-[0_0_50px_rgba(244,63,94,0.3)] anim-slide-up">
-              <div className="absolute inset-0 cyber-grid opacity-30 pointer-events-none" />
-              <div className="absolute -top-12 -right-12 w-48 h-48 rounded-full bg-rose-400/20 blur-3xl pointer-events-none" />
-
+          {!loading && missingFiles.length > 0 && (activeView === 'dashboard' || activeView === 'documents') && (
+            <div className="relative overflow-hidden rounded-[28px] border border-rose-200 bg-gradient-to-r from-rose-50 via-white to-rose-50 p-6 shadow-[0_2px_16px_rgba(225,29,72,0.08)] anim-slide-up">
               <div className="relative flex items-start gap-5">
                 <div className="relative shrink-0">
-                  <div className="absolute inset-0 bg-rose-400 blur-2xl opacity-60 anim-blink" />
-                  <div className="relative w-14 h-14 rounded-2xl bg-gradient-to-br from-rose-400 via-pink-400 to-fuchsia-400 flex items-center justify-center shadow-[0_0_30px_rgba(244,63,94,0.7)]">
+                  <div className="relative w-14 h-14 rounded-2xl bg-rose-100 flex items-center justify-center border border-rose-200">
                     <XCircle
-                      className="w-8 h-8 text-slate-950 anim-blink"
+                      className="w-8 h-8 text-rose-500"
                       strokeWidth={2.8}
                     />
                   </div>
                 </div>
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-3 mb-2">
-                    <div className="text-[10px] uppercase tracking-[0.45em] text-rose-300/80 font-mono-techy font-bold">
+                    <div className="text-[10px] uppercase tracking-[0.45em] text-rose-500 font-mono-techy font-bold">
                       Files Missing
                     </div>
-                    <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-rose-500/20 border border-rose-400/40 text-rose-200 font-display text-[10px] font-bold tracking-[0.2em] anim-blink">
+                    <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-rose-100 border border-rose-300 text-rose-600 font-display text-[10px] font-bold tracking-[0.2em]">
                       {missingFiles.length} MISSING
                     </span>
                   </div>
-                  <div className="font-display text-lg lg:text-xl font-black text-rose-200 mb-3 tracking-wide">
+                  <div className="font-display text-lg lg:text-xl font-black text-rose-700 mb-3 tracking-wide">
                     The following required files are missing from the ZIP
                   </div>
                   <div className="flex flex-wrap gap-2">
                     {missingFiles.map((name) => (
                       <span
                         key={name}
-                        className="anim-blink inline-flex items-center px-3 py-1.5 rounded-lg border border-rose-400/50 bg-rose-500/15 text-rose-200 font-mono-techy text-[11px] font-bold tracking-wide shadow-[0_0_15px_rgba(244,63,94,0.4)]"
+                        className="inline-flex items-center px-3 py-1.5 rounded-lg border border-rose-300 bg-rose-50 text-rose-600 font-mono-techy text-[11px] font-bold tracking-wide"
                       >
                         {name}
                       </span>
@@ -4361,10 +5534,10 @@ tr.overdue { background: #fff0f0; }
           )}
 
           {loading && (
-            <div className="relative overflow-hidden bg-slate-900/60 backdrop-blur-2xl border border-emerald-400/30 rounded-[32px] p-8 shadow-[0_0_80px_rgba(52,211,153,0.25)] anim-slide-up">
+            <div className="relative overflow-hidden bg-white/80 backdrop-blur-xl border border-violet-200 rounded-[32px] p-8 shadow-[0_4px_24px_rgba(124,58,237,0.08)] anim-slide-up">
               {/* scan line */}
               <div
-                className="absolute inset-x-0 h-[2px] bg-gradient-to-r from-transparent via-emerald-300 to-transparent pointer-events-none"
+                className="absolute inset-x-0 h-[2px] bg-gradient-to-r from-transparent via-violet-400 to-transparent pointer-events-none"
                 style={{
                   top: 0,
                   animation: 'scanline 2.6s linear infinite',
@@ -4381,58 +5554,58 @@ tr.overdue { background: #fff0f0; }
 
                   {/* back pages (stacked offset) */}
                   <div
-                    className="absolute w-24 h-28 rounded-lg border border-white/10 bg-slate-800/50 backdrop-blur-sm shadow-[0_4px_18px_rgba(0,0,0,0.5)]"
+                    className="absolute w-24 h-28 rounded-lg border border-violet-200 bg-white shadow-[0_2px_12px_rgba(124,58,237,0.08)]"
                     style={{ transform: 'translate(14px, 8px) rotate(7deg)' }}
                   />
                   <div
-                    className="absolute w-24 h-28 rounded-lg border border-white/10 bg-slate-800/70 backdrop-blur-sm shadow-[0_4px_18px_rgba(0,0,0,0.5)]"
+                    className="absolute w-24 h-28 rounded-lg border border-violet-200 bg-white shadow-[0_2px_12px_rgba(124,58,237,0.1)]"
                     style={{ transform: 'translate(7px, 4px) rotate(3.5deg)' }}
                   />
 
                   {/* main scanning page */}
-                  <div className="relative w-24 h-28 rounded-lg border border-emerald-400/50 bg-slate-950/85 overflow-hidden shadow-[0_0_32px_rgba(52,211,153,0.5)]">
+                  <div className="relative w-24 h-28 rounded-lg border-2 border-violet-400/50 bg-white overflow-hidden shadow-[0_4px_24px_rgba(124,58,237,0.15)]">
                     {/* PDF badge */}
-                    <div className="absolute top-1.5 left-1.5 px-1.5 py-0.5 rounded-[3px] text-[7px] font-mono-techy font-bold bg-rose-500/90 text-white tracking-[0.15em] shadow">
+                    <div className="absolute top-1.5 left-1.5 px-1.5 py-0.5 rounded-[3px] text-[7px] font-mono-techy font-bold bg-violet-600 text-white tracking-[0.15em] shadow">
                       PDF
                     </div>
 
                     {/* document text lines */}
                     <div className="absolute inset-x-2 top-7 bottom-2 flex flex-col gap-1.5">
-                      <div className="h-[3px] bg-cyan-300/40 rounded-sm" />
-                      <div className="h-[3px] bg-cyan-300/40 rounded-sm w-5/6" />
-                      <div className="h-[3px] bg-cyan-300/40 rounded-sm w-3/4" />
-                      <div className="h-[3px] bg-cyan-300/40 rounded-sm" />
-                      <div className="h-[3px] bg-cyan-300/40 rounded-sm w-2/3" />
-                      <div className="h-[3px] bg-cyan-300/40 rounded-sm w-4/5" />
-                      <div className="h-[3px] bg-cyan-300/40 rounded-sm w-1/2" />
+                      <div className="h-[3px] bg-indigo-200 rounded-sm" />
+                      <div className="h-[3px] bg-cyan-200 rounded-sm w-5/6" />
+                      <div className="h-[3px] bg-indigo-200 rounded-sm w-3/4" />
+                      <div className="h-[3px] bg-cyan-200 rounded-sm" />
+                      <div className="h-[3px] bg-indigo-200 rounded-sm w-2/3" />
+                      <div className="h-[3px] bg-cyan-200 rounded-sm w-4/5" />
+                      <div className="h-[3px] bg-indigo-200 rounded-sm w-1/2" />
                     </div>
 
                     {/* horizontal scan beam */}
-                    <div className="absolute inset-x-0 h-[2px] bg-gradient-to-r from-transparent via-emerald-300 to-transparent shadow-[0_0_18px_4px_rgba(52,211,153,0.75)] pointer-events-none anim-page-scan" />
+                    <div className="absolute inset-x-0 h-[2px] bg-gradient-to-r from-transparent via-violet-500 to-transparent shadow-[0_0_14px_3px_rgba(124,58,237,0.5)] pointer-events-none anim-page-scan" />
 
                     {/* soft scan glow tracking the beam */}
-                    <div className="absolute inset-x-0 h-10 bg-gradient-to-b from-emerald-400/25 via-emerald-400/5 to-transparent pointer-events-none anim-page-scan-trail" />
+                    <div className="absolute inset-x-0 h-10 bg-gradient-to-b from-violet-400/20 via-violet-300/5 to-transparent pointer-events-none anim-page-scan-trail" />
                   </div>
 
                   {/* corner brackets framing the scan area */}
                   <div className="absolute w-32 h-32 pointer-events-none">
-                    <div className="absolute top-0 left-0 w-3 h-3 border-t-2 border-l-2 border-emerald-300" />
-                    <div className="absolute top-0 right-0 w-3 h-3 border-t-2 border-r-2 border-emerald-300" />
-                    <div className="absolute bottom-0 left-0 w-3 h-3 border-b-2 border-l-2 border-emerald-300" />
-                    <div className="absolute bottom-0 right-0 w-3 h-3 border-b-2 border-r-2 border-emerald-300" />
+                    <div className="absolute top-0 left-0 w-3 h-3 border-t-2 border-l-2 border-violet-500" />
+                    <div className="absolute top-0 right-0 w-3 h-3 border-t-2 border-r-2 border-violet-500" />
+                    <div className="absolute bottom-0 left-0 w-3 h-3 border-b-2 border-l-2 border-violet-500" />
+                    <div className="absolute bottom-0 right-0 w-3 h-3 border-b-2 border-r-2 border-violet-500" />
                   </div>
                 </div>
 
                 <div className="space-y-4 min-w-0">
                   <div className="flex items-center gap-2">
-                    <Activity className="w-3.5 h-3.5 text-emerald-300 animate-pulse" />
-                    <div className="text-[10px] uppercase tracking-[0.45em] text-cyan-300/80 font-mono-techy font-bold">
+                    <Activity className="w-3.5 h-3.5 text-violet-500 animate-pulse" />
+                    <div className="text-[10px] uppercase tracking-[0.45em] text-violet-600 font-mono-techy font-bold">
                       AI Neural Engine · Live Scan
                     </div>
                   </div>
 
                   <div className="space-y-1">
-                    <div className="text-[9px] uppercase tracking-[0.3em] text-emerald-300/70 font-mono-techy">
+                    <div className="text-[9px] uppercase tracking-[0.3em] text-indigo-500 font-mono-techy font-semibold">
                       {currentStage || 'Initializing…'}
                     </div>
                     <div className="font-display text-xl md:text-2xl font-black gradient-text break-all leading-snug">
@@ -4441,20 +5614,20 @@ tr.overdue { background: #fff0f0; }
                   </div>
 
                   <div className="space-y-2">
-                    <div className="flex justify-between items-center text-[10px] font-mono-techy uppercase tracking-[0.25em] text-cyan-200/70">
+                    <div className="flex justify-between items-center text-[10px] font-mono-techy uppercase tracking-[0.25em] text-slate-900 font-bold">
                       <span>
                         File {Math.min(processedCount + 1, totalCount || 1)} / {totalCount || 1}
                       </span>
-                      <span className="text-emerald-300 font-bold">
+                      <span className="text-black font-black text-xs">
                         {Math.round(
                           (processedCount / (totalCount || 1)) * 100
                         )}
                         %
                       </span>
                     </div>
-                    <div className="h-2.5 bg-slate-950/80 rounded-full overflow-hidden border border-white/10 relative">
+                    <div className="h-2.5 bg-violet-100 rounded-full overflow-hidden border border-violet-200 relative">
                       <div
-                        className="h-full bg-gradient-to-r from-emerald-400 via-cyan-400 via-violet-400 to-pink-400 transition-all duration-500 shadow-[0_0_25px_rgba(52,211,153,0.6)]"
+                        className="h-full bg-black transition-all duration-500 shadow-[0_0_16px_rgba(0,0,0,0.45)]"
                         style={{
                           width: `${Math.min(100, (processedCount / (totalCount || 1)) * 100)}%`,
                         }}
@@ -4473,8 +5646,8 @@ tr.overdue { background: #fff0f0; }
                             key={step}
                             className={`px-3 py-1 rounded-full border text-[9px] font-display font-bold tracking-[0.25em] uppercase ${
                               active
-                                ? 'border-emerald-300/60 bg-emerald-400/10 text-emerald-300 shadow-[0_0_15px_rgba(52,211,153,0.3)]'
-                                : 'border-white/10 text-white/40'
+                                ? 'border-violet-400 bg-violet-50 text-violet-600 shadow-[0_2px_8px_rgba(124,58,237,0.15)]'
+                                : 'border-slate-200 text-slate-400 bg-white'
                             }`}
                             style={{
                               animation: active
@@ -4506,7 +5679,7 @@ tr.overdue { background: #fff0f0; }
                     <div className="flex items-center gap-2 mb-1">
                       <Sparkles className="w-3 h-3 text-emerald-300" />
                       <div className="text-[10px] uppercase tracking-[0.4em] text-emerald-300/80 font-mono-techy font-bold">
-                        Step 02 · Detect
+                        Detect
                       </div>
                     </div>
                     <h3 className="font-display text-lg lg:text-xl font-black tracking-[0.15em] gradient-text">
@@ -4609,7 +5782,7 @@ tr.overdue { background: #fff0f0; }
                         <div className="flex items-center gap-2 mb-0.5">
                           <Activity className="w-3 h-3 text-violet-300 animate-pulse" />
                           <div className="text-[10px] uppercase tracking-[0.4em] text-violet-300/80 font-mono-techy font-bold">
-                            Step 03 · Verify
+                            Verify
                           </div>
                         </div>
                         <h3 className="font-display text-lg lg:text-xl font-black tracking-[0.15em] gradient-text-fire">
@@ -5702,22 +6875,246 @@ tr.overdue { background: #fff0f0; }
                     </h3>
                   </div>
                 </div>
-                <button
-                  type="button"
-                  onClick={() =>
-                    setChatMessages([
-                      {
-                        role: 'ai',
-                        content:
-                          "Chat cleared. Ask me about any section, rule, or paragraph of the APCS Act/Rules/Audit Manual.",
-                      },
-                    ])
-                  }
-                  className="px-3 py-1.5 rounded-lg border border-white/15 bg-white/5 hover:bg-white/10 text-[10px] uppercase tracking-[0.2em] font-mono-techy font-bold text-cyan-200/80 transition-colors"
-                >
-                  Clear
-                </button>
+                <div className="flex items-center gap-2">
+                  <span
+                    className={`px-2.5 py-1 rounded-full text-[9px] uppercase tracking-[0.2em] font-mono-techy font-bold border inline-flex items-center gap-1.5 ${
+                      aiKey
+                        ? 'bg-emerald-500/15 border-emerald-400/40 text-emerald-200'
+                        : 'bg-amber-500/15 border-amber-400/40 text-amber-200'
+                    }`}
+                    title={
+                      aiKey
+                        ? 'Live AI active — Gemini answers your questions'
+                        : 'Offline mode — rule-based engine. Add an AI key for true AI.'
+                    }
+                  >
+                    <span
+                      className={`w-1.5 h-1.5 rounded-full ${
+                        aiKey ? 'bg-emerald-400 animate-pulse' : 'bg-amber-400'
+                      }`}
+                    />
+                    {aiKey ? 'Live AI' : 'Offline'}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setAiKeyDraft('');
+                      setShowKeyPanel((v) => !v);
+                    }}
+                    className="px-3 py-1.5 rounded-lg border border-violet-400/40 bg-violet-500/10 hover:bg-violet-500/20 text-[10px] uppercase tracking-[0.2em] font-mono-techy font-bold text-violet-200 transition-colors inline-flex items-center gap-1.5"
+                  >
+                    <KeyRound className="w-3 h-3" strokeWidth={2.5} />
+                    AI Key
+                  </button>
+                  <label className="cursor-pointer px-3 py-1.5 rounded-lg border border-fuchsia-400/40 bg-fuchsia-500/10 hover:bg-fuchsia-500/20 text-[10px] uppercase tracking-[0.2em] font-mono-techy font-bold text-fuchsia-200 transition-colors inline-flex items-center gap-1.5">
+                    <FilePlus2 className="w-3 h-3" strokeWidth={2.5} />
+                    Add PDF
+                    <input
+                      type="file"
+                      accept=".pdf,application/pdf"
+                      className="hidden"
+                      onChange={(e) => {
+                        const f = e.target.files?.[0];
+                        if (f) handleAddUserReference(f);
+                        e.target.value = '';
+                      }}
+                    />
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setChatMessages([
+                        {
+                          role: 'ai',
+                          content:
+                            "Chat cleared. Ask me about any section, rule, or paragraph of the APCS Act/Rules/Audit Manual.",
+                        },
+                      ])
+                    }
+                    className="px-3 py-1.5 rounded-lg border border-white/15 bg-white/5 hover:bg-white/10 text-[10px] uppercase tracking-[0.2em] font-mono-techy font-bold text-cyan-200/80 transition-colors"
+                  >
+                    Clear
+                  </button>
+                </div>
               </div>
+
+              {/* AI key panel — paste a Google Gemini API key to enable live AI */}
+              {showKeyPanel && (
+                <div className="relative px-6 py-4 border-b border-white/10 bg-slate-950/50 anim-slide-up">
+                  <div className="text-[10px] uppercase tracking-[0.25em] text-violet-300/90 font-mono-techy font-bold mb-2">
+                    Gemini AI Key {aiKey && '· key saved ✓'}
+                  </div>
+                  <div className="flex flex-col sm:flex-row gap-2">
+                  {/* Live AI test panel — exercises the same code path the chat uses */}
+<div className="mb-4 rounded-2xl border border-violet-400/30 bg-gradient-to-r from-violet-500/5 via-fuchsia-500/5 to-violet-500/5 p-4">
+  <div className="flex items-center gap-2 mb-2">
+    <Zap className="w-3.5 h-3.5 text-violet-300" strokeWidth={2.5} />
+    <div className="text-[10px] uppercase tracking-[0.3em] text-violet-300/90 font-mono-techy font-bold">
+      Test Live AI · {hasGeminiKey() ? 'KEY DETECTED — WILL CALL GEMINI' : 'NO KEY — WILL USE OFFLINE FALLBACK'}
+    </div>
+  </div>
+
+  <div className="flex flex-col gap-2">
+    <textarea
+      value={aiTestQuestion}
+      onChange={(e) => setAiTestQuestion(e.target.value)}
+      rows={2}
+      placeholder="Type a test question…"
+      className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-[13px] text-slate-800 placeholder:text-slate-400 focus:outline-none vibgyor-input-focus resize-none"
+    />
+    <div className="flex items-center gap-2">
+      <button
+        type="button"
+        onClick={runAiKeyTest}
+        disabled={aiTestRunning || !aiTestQuestion.trim()}
+        className="flex-1 inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-violet-600 text-white text-[12px] font-display tracking-[0.18em] uppercase font-bold hover:bg-violet-500 disabled:opacity-40 transition-colors"
+      >
+        <Zap className="w-3.5 h-3.5" strokeWidth={2.5} />
+        {aiTestRunning ? 'Calling…' : hasGeminiKey() ? 'Test Live Gemini' : 'Test Offline Fallback'}
+      </button>
+      <button
+        type="button"
+        onClick={() => setAiTestResult(null)}
+        disabled={!aiTestResult}
+        className="px-4 py-2.5 rounded-xl bg-white text-slate-700 text-[12px] font-bold border border-slate-200 hover:border-rose-300 hover:text-rose-600 transition-colors disabled:opacity-40"
+      >
+        Clear
+      </button>
+    </div>
+  </div>
+
+  {aiTestResult && (
+    <div
+      className={`mt-3 rounded-xl border p-3 anim-row ${
+        aiTestResult.mode === 'live'
+          ? 'border-emerald-400/40 bg-emerald-500/5'
+          : aiTestResult.mode === 'offline'
+          ? 'border-amber-400/40 bg-amber-500/5'
+          : 'border-rose-400/40 bg-rose-500/5'
+      }`}
+    >
+      <div className="flex items-center justify-between gap-2 flex-wrap mb-2">
+        <div className="flex items-center gap-2">
+          {aiTestResult.mode === 'live' ? (
+            <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[9px] tracking-[0.2em] font-mono-techy font-bold border bg-emerald-500/15 border-emerald-400/40 text-emerald-300 uppercase">
+              <CheckCircle2 className="w-3 h-3" strokeWidth={3} />
+              LIVE · Gemini responded
+            </span>
+          ) : aiTestResult.mode === 'offline' ? (
+            <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[9px] tracking-[0.2em] font-mono-techy font-bold border bg-amber-500/15 border-amber-400/40 text-amber-300 uppercase">
+              <AlertCircle className="w-3 h-3" strokeWidth={3} />
+              OFFLINE · corpus / keyword engine
+            </span>
+          ) : (
+            <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[9px] tracking-[0.2em] font-mono-techy font-bold border bg-rose-500/15 border-rose-400/40 text-rose-300 uppercase">
+              <AlertCircle className="w-3 h-3" strokeWidth={3} />
+              ERROR
+            </span>
+          )}
+          <span className="text-[10px] text-cyan-200/60 font-mono-techy">
+            · {aiTestResult.ms} ms
+          </span>
+        </div>
+      </div>
+      {aiTestResult.error ? (
+        <pre className="text-[11px] text-rose-200/90 whitespace-pre-wrap font-mono-techy leading-relaxed">
+          {aiTestResult.error}
+        </pre>
+      ) : (
+        <p className="text-[12px] text-white/85 leading-relaxed whitespace-pre-wrap">
+          {aiTestResult.text}
+        </p>
+      )}
+      {aiTestResult.note && (
+        <p className="mt-2 text-[10px] text-cyan-200/50 italic leading-relaxed">
+          {aiTestResult.note}
+        </p>
+      )}
+    </div>
+  )}
+</div>
+                    <input
+                      type="password"
+                      value={aiKeyDraft}
+                      onChange={(e) => setAiKeyDraft(e.target.value)}
+                      placeholder={
+                        aiKey ? 'Enter a new key to replace…' : 'AIza…'
+                      }
+                      autoComplete="off"
+                      className="flex-1 bg-white border border-slate-200 rounded-xl px-4 py-2.5 text-sm text-slate-800 placeholder:text-slate-400 focus:outline-none vibgyor-input-focus"
+                    />
+                    <button
+                      type="button"
+                      onClick={saveAiKey}
+                      disabled={!aiKeyDraft.trim()}
+                      className="px-5 py-2.5 rounded-xl bg-violet-600 text-white text-sm font-bold tracking-wide hover:bg-violet-500 disabled:opacity-40 transition-colors"
+                    >
+                      Save
+                    </button>
+                    {aiKey && (
+                      <button
+                        type="button"
+                        onClick={clearAiKey}
+                        className="px-5 py-2.5 rounded-xl bg-white text-slate-700 text-sm font-bold tracking-wide border border-slate-200 hover:border-rose-300 hover:text-rose-600 transition-colors"
+                      >
+                        Remove
+                      </button>
+                    )}
+                  </div>
+                  <p className="mt-2 text-[10px] text-cyan-200/50 leading-relaxed">
+                    Stored locally in this browser only (never bundled). With a key,
+                    the chat reasons with Gemini (draft → humanize) and cites case-law;
+                    without it, the offline reference engine is used.
+                  </p>
+                </div>
+              )}
+
+              {/* Corpus status strip */}
+              {(corpusStatus === 'loading' ||
+                corpus.length > 0) && (
+                <div className="relative px-6 py-2.5 border-b border-white/10 bg-slate-950/40 flex items-center justify-between flex-wrap gap-2">
+                  <div className="flex items-center gap-2 flex-wrap text-[10px] font-mono-techy uppercase tracking-[0.25em]">
+                    {corpusStatus === 'loading' ? (
+                      <span className="text-fuchsia-300 animate-pulse">
+                        ⏳ Indexing references… {corpusProgress.done}/
+                        {corpusProgress.total}
+                      </span>
+                    ) : (
+                      <span className="text-emerald-300">
+                        ✓ {corpus.length} reference(s) indexed
+                      </span>
+                    )}
+                  </div>
+                  {corpus.length > 0 && (
+                    <div className="flex flex-wrap gap-1.5">
+                      {corpus.map((d) => (
+                        <span
+                          key={d.id}
+                          className={`px-2 py-0.5 rounded-full text-[9px] font-mono-techy font-bold border ${
+                            d.source === 'user'
+                              ? 'bg-lime-400/15 border-lime-400/40 text-lime-200'
+                              : 'bg-fuchsia-400/10 border-fuchsia-400/30 text-fuchsia-200'
+                          }`}
+                        >
+                          {d.name} · {d.pages.length}p
+                          {d.source === 'user' && (
+                            <button
+                              type="button"
+                              onClick={() =>
+                                handleRemoveUserReference(d.id)
+                              }
+                              className="ml-1 text-rose-300 hover:text-rose-400"
+                              title="Remove"
+                            >
+                              ×
+                            </button>
+                          )}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
 
               <div
                 className="relative p-5 space-y-4 max-h-[55vh] overflow-y-auto"
@@ -5749,13 +7146,53 @@ tr.overdue { background: #fff0f0; }
                       )}
                     </div>
                     <div
-                      className={`max-w-[80%] rounded-2xl px-4 py-3 text-[13px] leading-relaxed border ${
+                      className={`max-w-[85%] rounded-2xl px-4 py-3 text-[13px] leading-relaxed border ${
                         m.role === 'user'
                           ? 'bg-cyan-500/10 border-cyan-400/30 text-cyan-50/95'
                           : 'bg-slate-900/60 border-white/15 text-white/90'
                       }`}
                     >
-                      {m.content}
+                      <div className="whitespace-pre-wrap">
+                        {m.content}
+                      </div>
+                      {m.citations && m.citations.length > 0 && (
+                        <div className="mt-3 pt-3 border-t border-white/10 space-y-2">
+                          <div className="text-[9px] uppercase tracking-[0.3em] text-fuchsia-300/80 font-mono-techy font-bold">
+                            Excerpts from indexed references
+                          </div>
+                          {m.citations.map((c, ci) => (
+                            <div
+                              key={ci}
+                              className="rounded-lg bg-fuchsia-500/5 border border-fuchsia-400/20 p-2.5"
+                            >
+                              <div className="text-[10px] font-mono-techy font-bold text-fuchsia-300/90 mb-1">
+                                📘 {c.doc} · page {c.page}
+                              </div>
+                              <div className="text-[12px] text-white/80 italic leading-relaxed">
+                                {c.snippet}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                      {m.references && m.references.length > 0 && (
+                        <div className="mt-3 pt-3 border-t border-white/10 space-y-1.5">
+                          <div className="text-[9px] uppercase tracking-[0.3em] text-cyan-300/80 font-mono-techy font-bold">
+                            Case-law &amp; statute references
+                          </div>
+                          {m.references.map((r, ri) => (
+                            <a
+                              key={ri}
+                              href={r.url}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="block text-[12px] text-cyan-300 hover:text-cyan-200 underline underline-offset-2 break-words"
+                            >
+                              🔗 {r.label}
+                            </a>
+                          ))}
+                        </div>
+                      )}
                     </div>
                   </div>
                 ))}
@@ -5768,7 +7205,9 @@ tr.overdue { background: #fff0f0; }
                       />
                     </div>
                     <div className="rounded-2xl px-4 py-3 bg-slate-900/60 border border-white/15 text-white/60 italic text-[12px]">
-                      Looking up the law…
+                      {hasGeminiKey()
+                        ? 'Researching the law, drafting & humanizing the answer…'
+                        : 'Looking up the law…'}
                     </div>
                   </div>
                 )}
@@ -5780,22 +7219,49 @@ tr.overdue { background: #fff0f0; }
                     e.preventDefault();
                     const q = chatInput.trim();
                     if (!q) return;
+                    // recent turns as conversation context for the AI agent
+                    const history = chatMessages
+                      .filter((m) => m.role === 'user' || m.role === 'ai')
+                      .slice(-6)
+                      .map((m) => ({
+                        role: m.role === 'ai' ? 'assistant' : 'user',
+                        content: m.content,
+                      }));
                     setChatMessages((prev) => [
                       ...prev,
                       { role: 'user', content: q },
                     ]);
                     setChatInput('');
                     setChatTyping(true);
-                    setTimeout(() => {
-                      setChatMessages((prev) => [
-                        ...prev,
-                        {
-                          role: 'ai',
-                          content: answerLegalQuery(q),
-                        },
-                      ]);
-                      setChatTyping(false);
-                    }, 380);
+                    (async () => {
+                      try {
+                        // AI agent: draft legal narrative -> humanize -> references
+                        const { text, references } =
+                          await generateLegalAgentAnswer(q, history);
+                        setChatMessages((prev) => [
+                          ...prev,
+                          { role: 'ai', content: text, references },
+                        ]);
+                      } catch (err) {
+                        // Fallback to the offline corpus / keyword engine
+                        const { text, citations } = answerWithCorpus(q);
+                        const prefix =
+                          err && err.code === 'NO_API_KEY'
+                            ? ''
+                            : '⚠️ AI service unavailable — showing the offline reference engine instead.\n\n';
+                        setChatMessages((prev) => [
+                          ...prev,
+                          {
+                            role: 'ai',
+                            content: prefix + text,
+                            citations,
+                            references: buildCaseLawReferences(q),
+                          },
+                        ]);
+                      } finally {
+                        setChatTyping(false);
+                      }
+                    })();
                   }}
                   className="flex items-center gap-2"
                 >
@@ -5804,7 +7270,7 @@ tr.overdue { background: #fff0f0; }
                     value={chatInput}
                     onChange={(e) => setChatInput(e.target.value)}
                     placeholder="Ask about Section 50, Rule 41(C)(6), Para 7.5, Annexure-8…"
-                    className="flex-1 bg-slate-950/70 border border-white/15 rounded-xl px-4 py-3 text-sm text-white placeholder:text-cyan-200/40 focus:outline-none focus:border-fuchsia-400/60 focus:ring-2 focus:ring-fuchsia-400/20"
+                    className="flex-1 bg-white border border-slate-200 rounded-xl px-4 py-3 text-sm text-slate-800 placeholder:text-slate-400 focus:outline-none vibgyor-input-focus"
                   />
                   <button
                     type="submit"
@@ -5935,25 +7401,21 @@ tr.overdue { background: #fff0f0; }
                     <button
                       type="button"
                       onClick={() => {
-                        if (
-                          !customDefectDraft.title.trim() ||
-                          !customDefectDraft.narrative.trim()
-                        )
-                          return;
-                        setCustomDefects((prev) => [
-                          ...prev,
-                          {
-                            ...customDefectDraft,
-                            title: customDefectDraft.title.trim(),
-                            narrative:
-                              customDefectDraft.narrative.trim(),
-                            id: Date.now(),
-                          },
-                        ]);
-                        setCustomDefectDraft({
-                          category: 'financial',
-                          title: '',
-                          narrative: '',
+                        const t = customDefectDraft.title.trim();
+                        const n = customDefectDraft.narrative.trim();
+                        if (!t || !n) return;
+                        const { narrative, citations } =
+                          generateDefectNarrative(
+                            t,
+                            n,
+                            customDefectDraft.category
+                          );
+                        setDefectPreview({
+                          title: t,
+                          category: customDefectDraft.category,
+                          rawNote: n,
+                          aiNarrative: narrative,
+                          citations,
                         });
                       }}
                       disabled={
@@ -5964,14 +7426,122 @@ tr.overdue { background: #fff0f0; }
                     >
                       <span className="absolute -inset-0.5 bg-gradient-to-r from-lime-400 via-emerald-400 to-cyan-400 rounded-xl blur opacity-50 group-hover:opacity-80 transition-opacity" />
                       <span className="relative inline-flex items-center gap-2 px-5 py-3 rounded-xl bg-gradient-to-r from-lime-500 via-emerald-500 to-cyan-500 text-slate-950 font-display tracking-[0.18em] uppercase text-[11px] font-black">
-                        <FilePlus2
+                        <Sparkles
                           className="w-4 h-4"
                           strokeWidth={2.8}
                         />
-                        Add Defect
+                        Generate AI Narrative
                       </span>
                     </button>
                   </div>
+
+                  {/* AI Preview & Confirm panel */}
+                  {defectPreview && (
+                    <div className="mt-5 rounded-2xl border border-emerald-400/40 bg-emerald-500/5 p-5 anim-row">
+                      <div className="flex items-start justify-between gap-3 mb-3">
+                        <div>
+                          <div className="text-[10px] uppercase tracking-[0.3em] text-emerald-700 font-mono-techy font-bold mb-1 flex items-center gap-1.5">
+                            <Bot className="w-3 h-3" strokeWidth={2.5} />
+                            AI Auditor Preview — Review before adding
+                          </div>
+                          <div className="font-display font-black text-base tracking-[0.05em] text-gray-900">
+                            {defectPreview.title}
+                          </div>
+                          <div className="mt-1">
+                            <span className="inline-block px-2 py-0.5 rounded-full text-[9px] tracking-[0.2em] font-display font-bold border bg-lime-400/15 border-lime-400/40 text-lime-800 uppercase">
+                              {defectPreview.category === 'financial'
+                                ? 'B.1 Financial'
+                                : defectPreview.category === 'accounting'
+                                ? 'B.2 Accounting'
+                                : 'B.3 Administrative'}
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="mb-3">
+                        <div className="text-[10px] uppercase tracking-[0.25em] text-gray-600 font-mono-techy font-bold mb-1.5">
+                          Suggested Humanised Narrative
+                        </div>
+                        <p
+                          className="text-[13px] text-gray-800 leading-relaxed text-justify"
+                          style={{
+                            fontFamily:
+                              "'Inter', system-ui, sans-serif",
+                          }}
+                        >
+                          {defectPreview.aiNarrative}
+                        </p>
+                      </div>
+
+                      <div className="mb-4">
+                        <div className="text-[10px] uppercase tracking-[0.25em] text-gray-600 font-mono-techy font-bold mb-1.5">
+                          Cited Provisions
+                        </div>
+                        <div className="flex flex-wrap gap-1.5">
+                          {defectPreview.citations.map((c, ci) => (
+                            <span
+                              key={ci}
+                              className="px-2 py-1 rounded-md text-[10px] bg-white border border-gray-300 text-gray-800 font-mono-techy"
+                            >
+                              {c}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setCustomDefects((prev) => [
+                              ...prev,
+                              {
+                                category: defectPreview.category,
+                                title: defectPreview.title,
+                                narrative: defectPreview.aiNarrative,
+                                id: Date.now(),
+                              },
+                            ]);
+                            setCustomDefectDraft({
+                              category: 'financial',
+                              title: '',
+                              narrative: '',
+                            });
+                            setDefectPreview(null);
+                          }}
+                          className="px-4 py-2 rounded-lg bg-gray-900 text-white text-[11px] font-display tracking-[0.18em] uppercase font-bold hover:bg-gray-800 inline-flex items-center gap-1.5"
+                        >
+                          <CheckCircle2 className="w-3.5 h-3.5" strokeWidth={2.5} />
+                          Confirm & Add to Defect Sheet
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            // Allow user to edit further; keep draft intact
+                            setDefectPreview(null);
+                          }}
+                          className="px-4 py-2 rounded-lg bg-white border border-gray-300 text-gray-900 text-[11px] font-display tracking-[0.18em] uppercase font-bold hover:bg-gray-50"
+                        >
+                          Edit / Re-draft
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setDefectPreview(null);
+                            setCustomDefectDraft({
+                              category: 'financial',
+                              title: '',
+                              narrative: '',
+                            });
+                          }}
+                          className="px-4 py-2 rounded-lg bg-white border border-rose-300 text-rose-700 text-[11px] font-display tracking-[0.18em] uppercase font-bold hover:bg-rose-50"
+                        >
+                          Discard
+                        </button>
+                      </div>
+                    </div>
+                  )}
                 </div>
               </div>
 
@@ -6413,10 +7983,39 @@ tr.overdue { background: #fff0f0; }
             </div>
           )}
 
+          {/* Dashboard action buttons — Print & Upload another file */}
+          {activeView === 'dashboard' && !loading && (detectedFiles.length > 0 || auditResults.length > 0) && (
+            <div className="no-print mt-6 flex flex-col sm:flex-row gap-3 justify-center anim-slide-up">
+              <button
+                type="button"
+                onClick={() => window.print()}
+                className="inline-flex items-center justify-center gap-2 px-6 py-3 rounded-xl bg-black text-white text-sm font-bold tracking-wide shadow-[0_4px_16px_rgba(0,0,0,0.25)] hover:bg-slate-800 transition-all duration-200"
+              >
+                <Printer className="w-4 h-4" />
+                Print
+              </button>
+              <button
+                type="button"
+                onClick={() => window.location.reload()}
+                className="inline-flex items-center justify-center gap-2 px-6 py-3 rounded-xl bg-white text-slate-800 text-sm font-bold tracking-wide border border-slate-200 shadow-[0_1px_3px_rgba(0,0,0,0.06)] hover:border-violet-300 hover:text-violet-600 transition-all duration-200"
+              >
+                <Upload className="w-4 h-4" />
+                Upload another file
+              </button>
+            </div>
+          )}
+
           {/* Drag-and-drop empty state — accepts drops AND click-to-browse */}
           {activeView === 'dashboard' && !loading &&
             detectedFiles.length === 0 &&
             auditResults.length === 0 && (
+              <div className="anim-slide-up flex flex-col justify-center min-h-[calc(100vh-290px)]">
+                {/* Welcome banner */}
+                <div className="text-center mb-4">
+                  <h2 className="font-display text-base lg:text-xl font-black tracking-[0.12em] gradient-text px-4 leading-snug">
+                    WELCOME USER, THIS IS FINANCIAL STATEMENT PDF ANALYSER
+                  </h2>
+                </div>
               <label
                 onDragOver={(e) => {
                   e.preventDefault();
@@ -6442,10 +8041,10 @@ tr.overdue { background: #fff0f0; }
                   const file = e.dataTransfer.files?.[0];
                   if (file) processZIP(file);
                 }}
-                className={`block cursor-pointer relative overflow-hidden rounded-[28px] border-2 border-dashed backdrop-blur-2xl p-12 lg:p-16 text-center anim-slide-up transition-all duration-300 ${
+                className={`glossy-border-box block cursor-pointer relative overflow-hidden p-6 lg:p-8 text-center transition-all duration-300 ${
                   isDragging
-                    ? 'border-emerald-300 bg-emerald-500/15 scale-[1.01] shadow-[0_0_60px_rgba(52,211,153,0.5)]'
-                    : 'border-white/20 bg-slate-900/40 hover:border-emerald-400/40 hover:bg-slate-900/55'
+                    ? 'scale-[1.02] shadow-[0_0_60px_rgba(124,58,237,0.4)]'
+                    : ''
                 }`}
               >
                 <input
@@ -6458,38 +8057,39 @@ tr.overdue { background: #fff0f0; }
                     event.target.value = '';
                   }}
                 />
-                <div className="absolute inset-0 cyber-grid opacity-30 pointer-events-none" />
+                <div className="absolute inset-0 cyber-grid opacity-[0.06] pointer-events-none" />
                 {isDragging && (
                   <>
-                    <div className="absolute -top-20 -right-20 w-64 h-64 rounded-full bg-emerald-400/30 blur-3xl pointer-events-none animate-pulse" />
-                    <div className="absolute -bottom-20 -left-20 w-64 h-64 rounded-full bg-cyan-400/30 blur-3xl pointer-events-none animate-pulse" />
+                    <div className="absolute -top-20 -right-20 w-64 h-64 rounded-full bg-violet-400/25 blur-3xl pointer-events-none animate-pulse" />
+                    <div className="absolute -bottom-20 -left-20 w-64 h-64 rounded-full bg-emerald-400/25 blur-3xl pointer-events-none animate-pulse" />
                   </>
                 )}
                 <div className="relative">
                   <div
-                    className={`text-7xl mb-4 ${
+                    className={`text-5xl mb-2 ${
                       isDragging ? 'animate-bounce' : 'anim-float'
                     }`}
                   >
                     {isDragging ? '⬇️' : '📁'}
                   </div>
-                  <h3 className="font-display text-2xl lg:text-3xl font-black tracking-[0.2em] gradient-text mb-2">
+                  <h3 className="font-display text-xl lg:text-2xl font-black tracking-[0.2em] gradient-text mb-1.5">
                     {isDragging
                       ? 'RELEASE TO UPLOAD'
                       : 'DRAG & DROP ZIP HERE'}
                   </h3>
-                  <p className="text-[11px] text-cyan-200/60 tracking-[0.15em] uppercase font-mono-techy max-w-md mx-auto">
+                  <p className="text-[11px] text-slate-500 tracking-[0.15em] uppercase font-mono-techy max-w-md mx-auto">
                     {isDragging
                       ? 'Drop the file to begin AI verification'
                       : 'Drop a ZIP with the cooperative audit PDFs or click to browse'}
                   </p>
-                  <div className="mt-5 flex items-center justify-center gap-3 text-[10px] uppercase tracking-[0.2em] font-mono-techy text-cyan-200/40">
+                  <div className="mt-3 flex items-center justify-center gap-3 text-[10px] uppercase tracking-[0.2em] font-mono-techy text-slate-400">
                     <span>Max 75 MB</span>
-                    <span className="text-cyan-200/30">·</span>
+                    <span className="text-slate-300">·</span>
                     <span>ZIP folder only</span>
                   </div>
                 </div>
               </label>
+              </div>
             )}
         </div>
       </main>

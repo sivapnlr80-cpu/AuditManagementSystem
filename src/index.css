@@ -1,157 +1,1192 @@
-@import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@400;500;600;700;800;900&family=Space+Grotesk:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap');
 @import "tailwindcss";
+
+/* ============================================================
+   COOP·AUDIT·AI — Soft Light Premium Theme
+   Pastel lavender → white → mint gradient · Dark text
+   Minimal borders · Clean typography · Trustworthy & elegant
+   ============================================================ */
+
+:root {
+  --bg-deep:       #F8F6FC;
+  --bg-card:       #FFFFFF;
+  --bg-elev:       #F3F1F9;
+  --bg-input:      #FFFFFF;
+  --text-primary:  #1e293b;
+  --text-secondary:#475569;
+  --text-tertiary: #64748b;
+  --text-muted:    #94a3b8;
+  --border-soft:   #e2e0ed;
+  --border-strong: #d1cde0;
+  --accent-em:     #10b981;
+  --accent-em-bg:  rgba(16, 185, 129, 0.08);
+  --accent-rose:   #e11d48;
+  --accent-rose-bg:rgba(225, 29, 72, 0.06);
+  --accent-amber:  #d97706;
+  --accent-amber-bg:rgba(217, 119, 6, 0.06);
+  --accent-violet: #7c3aed;
+  --accent-violet-bg:rgba(124, 58, 237, 0.06);
+  --accent-cyan:   #0891b2;
+  --accent-cyan-bg:rgba(8, 145, 178, 0.06);
+}
+
+* {
+  box-sizing: border-box;
+}
 
 html, body, #root {
   margin: 0;
   padding: 0;
   min-height: 100%;
-  font-family: 'Space Grotesk', system-ui, sans-serif;
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
   -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  background: linear-gradient(160deg, #EAE6F8 0%, #FFFFFF 50%, #EBF7F2 100%);
+  color: var(--text-primary);
+  font-weight: 400;
+  letter-spacing: -0.005em;
+  line-height: 1.55;
 }
 
+/* ===== Typography ===== */
 .font-display {
-  font-family: 'Orbitron', sans-serif;
-  letter-spacing: 0.02em;
+  font-family: 'Inter', sans-serif;
+  font-weight: 700;
+  letter-spacing: -0.012em;
 }
 
 .font-mono-techy {
-  font-family: 'JetBrains Mono', monospace;
+  font-family: 'Inter', -apple-system, sans-serif;
+  font-weight: 500;
+  letter-spacing: 0.01em;
 }
 
-.gradient-text {
-  background: linear-gradient(
-    90deg,
-    #34d399 0%,
-    #22d3ee 25%,
-    #fbbf24 50%,
-    #22d3ee 75%,
-    #34d399 100%
-  );
-  background-size: 200% auto;
-  -webkit-background-clip: text;
-  background-clip: text;
-  -webkit-text-fill-color: transparent;
-  animation: gradientShift 6s linear infinite;
-}
-
-.gradient-text-fire {
-  background: linear-gradient(
-    90deg,
-    #fbbf24 0%,
-    #f472b6 50%,
-    #fbbf24 100%
-  );
-  background-size: 200% auto;
-  -webkit-background-clip: text;
-  background-clip: text;
-  -webkit-text-fill-color: transparent;
-  animation: gradientShift 4s linear infinite;
-}
-
+/* ===== Disable showy animations ===== */
 .cyber-grid {
-  background-image:
-    linear-gradient(rgba(52, 211, 153, 0.07) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(52, 211, 153, 0.07) 1px, transparent 1px);
-  background-size: 36px 36px;
+  background: none !important;
 }
 
-.glow-emerald {
-  box-shadow: 0 0 40px rgba(52, 211, 153, 0.4),
-    inset 0 0 20px rgba(52, 211, 153, 0.05);
+.anim-blink,
+.anim-success-glow,
+.anim-shake,
+.anim-float {
+  animation: none !important;
 }
 
-.glow-red {
-  box-shadow: 0 0 40px rgba(248, 113, 113, 0.4),
-    inset 0 0 20px rgba(248, 113, 113, 0.05);
+.anim-row,
+.anim-slide-up {
+  animation: none !important;
+  filter: none !important;
+  opacity: 1 !important;
+  transform: none !important;
 }
 
-@keyframes gradientShift {
-  0% { background-position: 0% 50%; }
-  100% { background-position: 200% 50%; }
+/* PDF scanning animations — keep these active */
+@keyframes scanBeam {
+  0%   { top: 0; }
+  100% { top: 100%; }
 }
 
-@keyframes rowSlideIn {
-  from {
-    opacity: 0;
-    transform: translateX(-40px);
-    filter: blur(4px);
+@keyframes scanTrail {
+  0%   { top: -10px; opacity: 0.8; }
+  100% { top: 100%; opacity: 0; }
+}
+
+.anim-page-scan {
+  animation: scanBeam 2s ease-in-out infinite !important;
+}
+
+.anim-page-scan-trail {
+  animation: scanTrail 2s ease-in-out infinite !important;
+}
+
+/* ===== Theme overrides ===== */
+#root {
+  background: linear-gradient(160deg, #EAE6F8 0%, #FFFFFF 50%, #EBF7F2 100%);
+  color: var(--text-primary);
+}
+
+#root > div.min-h-screen {
+  background: linear-gradient(160deg, #EAE6F8 0%, #FFFFFF 50%, #EBF7F2 100%) !important;
+  background-image: linear-gradient(160deg, #EAE6F8 0%, #FFFFFF 50%, #EBF7F2 100%) !important;
+  color: var(--text-primary) !important;
+}
+
+/* Hero header panel — premium frosted glass with lavender-mint gradient */
+#root main > div > div.rounded-\[32px\][class*="bg-slate-900"] {
+  background: linear-gradient(135deg,
+    rgba(234, 230, 248, 0.85) 0%,
+    rgba(255, 255, 255, 0.95) 35%,
+    rgba(235, 247, 242, 0.85) 70%,
+    rgba(237, 233, 254, 0.8) 100%
+  ) !important;
+  backdrop-filter: blur(20px) !important;
+  -webkit-backdrop-filter: blur(20px) !important;
+  border: 1px solid rgba(124, 58, 237, 0.12) !important;
+  box-shadow:
+    0 1px 2px rgba(124, 58, 237, 0.06),
+    0 8px 32px rgba(124, 58, 237, 0.08),
+    inset 0 1px 0 rgba(255, 255, 255, 0.7) !important;
+}
+
+/* All text in hero — deep readable dark */
+#root main > div > div.rounded-\[32px\][class*="bg-slate-900"] * {
+  color: #1e293b;
+}
+
+/* "AI · NEURAL · VERIFICATION" eyebrow */
+#root main > div > div.rounded-\[32px\][class*="bg-slate-900"] [class*="text-yellow-300"],
+#root main > div > div.rounded-\[32px\][class*="bg-slate-900"] [class*="text-yellow-200"] {
+  color: #b45309 !important;
+}
+
+/* Subtitle text */
+#root main > div > div.rounded-\[32px\][class*="bg-slate-900"] [class*="text-cyan-200"],
+#root main > div > div.rounded-\[32px\][class*="bg-slate-900"] [class*="text-cyan-300"] {
+  color: #475569 !important;
+}
+
+#root main > div > div.rounded-\[32px\][class*="bg-slate-900"] [class*="text-emerald"] {
+  color: #059669 !important;
+}
+
+/* Hero heading — bold gradient text */
+#root main > div > div.rounded-\[32px\][class*="bg-slate-900"] .gradient-text {
+  background: linear-gradient(135deg, #7c3aed, #4f46e5, #0891b2, #059669) !important;
+  background-size: 100% auto !important;
+  -webkit-background-clip: text !important;
+          background-clip: text !important;
+  -webkit-text-fill-color: transparent !important;
+  color: transparent !important;
+  font-weight: 800 !important;
+}
+
+/* e-PACS logo inside hero */
+#root main > div > div.rounded-\[32px\][class*="bg-slate-900"] img[alt*="e-PACS"],
+#root main > div > div.rounded-\[32px\][class*="bg-slate-900"] img[alt*="ERP for Agriculture"] {
+  background: #ffffff !important;
+  border: 2px solid #d97706 !important;
+  box-shadow: 0 4px 16px rgba(217, 119, 6, 0.15) !important;
+}
+
+/* Icon pill inside hero — soft vibrant gradient */
+#root main > div > div.rounded-\[32px\][class*="bg-slate-900"] [class*="bg-gradient-to-br"] {
+  background: linear-gradient(135deg, #7c3aed, #6366f1, #0891b2) !important;
+  background-image: linear-gradient(135deg, #7c3aed, #6366f1, #0891b2) !important;
+  border: none !important;
+  box-shadow: 0 4px 20px rgba(124, 58, 237, 0.25) !important;
+}
+
+#root main > div > div.rounded-\[32px\][class*="bg-slate-900"] [class*="bg-gradient-to-br"] svg {
+  color: #ffffff !important;
+}
+
+/* Top accent line in hero — vibrant rainbow */
+#root main > div > div.rounded-\[32px\][class*="bg-slate-900"] > [class*="h-px"] {
+  background: linear-gradient(90deg,
+    transparent 0%,
+    #ee2222 10%, #ff7f00 25%, #f5d000 38%,
+    #2ecc40 50%, #2196f3 62%, #4b0082 75%, #9400d3 88%,
+    transparent 100%
+  ) !important;
+  background-image: linear-gradient(90deg,
+    transparent 0%,
+    #ee2222 10%, #ff7f00 25%, #f5d000 38%,
+    #2ecc40 50%, #2196f3 62%, #4b0082 75%, #9400d3 88%,
+    transparent 100%
+  ) !important;
+  height: 3px !important;
+  opacity: 0.7 !important;
+  border-radius: 2px !important;
+}
+
+/* Strip all other dark backgrounds → light */
+#root [class*="bg-slate-950"],
+#root [class*="bg-slate-900"],
+#root [class*="bg-slate-800"],
+#root [class*="from-slate-"],
+#root [class*="via-slate-"],
+#root [class*="to-slate-"],
+#root [class*="bg-gradient-to-br"],
+#root [class*="bg-gradient-to-r"],
+#root [class*="bg-gradient-to-b"] {
+  background-color: transparent !important;
+  background-image: none !important;
+}
+
+/* Cards / panels — clean white with subtle shadow */
+#root [class*="rounded-[28px]"],
+#root [class*="rounded-[24px]"],
+#root [class*="rounded-[20px]"],
+#root [class*="rounded-[32px]"],
+#root [class*="rounded-2xl"],
+#root [class*="rounded-3xl"],
+#root [class*="rounded-xl"] {
+  background-color: var(--bg-card) !important;
+  border: 1px solid var(--border-soft) !important;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04), 0 4px 20px rgba(0, 0, 0, 0.03) !important;
+}
+
+/* Soft tints */
+#root [class*="bg-white/5"],
+#root [class*="bg-white/10"],
+#root [class*="bg-white/[0.03]"],
+#root [class*="bg-white/[0.07]"] {
+  background-color: var(--bg-elev) !important;
+}
+
+/* Accent surfaces — soft pastel tints */
+#root [class*="bg-emerald-500/"],
+#root [class*="bg-emerald-400/"] {
+  background-color: var(--accent-em-bg) !important;
+}
+
+#root [class*="bg-rose-500/"],
+#root [class*="bg-rose-400/"],
+#root [class*="bg-red-500/"],
+#root [class*="bg-red-400/"] {
+  background-color: var(--accent-rose-bg) !important;
+}
+
+#root [class*="bg-amber-500/"],
+#root [class*="bg-amber-400/"],
+#root [class*="bg-yellow-500/"],
+#root [class*="bg-yellow-400/"] {
+  background-color: var(--accent-amber-bg) !important;
+}
+
+#root [class*="bg-cyan-500/"],
+#root [class*="bg-cyan-400/"],
+#root [class*="bg-sky-500/"],
+#root [class*="bg-sky-400/"],
+#root [class*="bg-blue-500/"],
+#root [class*="bg-blue-400/"] {
+  background-color: var(--accent-cyan-bg) !important;
+}
+
+#root [class*="bg-violet-500/"],
+#root [class*="bg-violet-400/"],
+#root [class*="bg-fuchsia-500/"],
+#root [class*="bg-fuchsia-400/"],
+#root [class*="bg-pink-500/"],
+#root [class*="bg-pink-400/"] {
+  background-color: var(--accent-violet-bg) !important;
+}
+
+#root [class*="bg-lime-500/"],
+#root [class*="bg-lime-400/"],
+#root [class*="bg-teal-500/"],
+#root [class*="bg-teal-400/"],
+#root [class*="bg-orange-500/"],
+#root [class*="bg-orange-400/"] {
+  background-color: var(--accent-em-bg) !important;
+}
+
+/* ===== TEXT colors ===== */
+#root [class*="text-white"] {
+  color: var(--text-primary) !important;
+}
+
+/* Slate / cyan / muted → secondary */
+#root [class*="text-cyan-100"],
+#root [class*="text-cyan-200"],
+#root [class*="text-cyan-300"],
+#root [class*="text-cyan-400"],
+#root [class*="text-slate-300"],
+#root [class*="text-slate-400"],
+#root [class*="text-violet-100"],
+#root [class*="text-violet-200"],
+#root [class*="text-violet-300"],
+#root [class*="text-violet-400"],
+#root [class*="text-sky-300"],
+#root [class*="text-sky-400"] {
+  color: var(--text-secondary) !important;
+}
+
+/* Accent text — deeper saturation for light bg readability */
+#root [class*="text-emerald-200"],
+#root [class*="text-emerald-300"],
+#root [class*="text-emerald-400"] {
+  color: var(--accent-em) !important;
+}
+
+#root [class*="text-rose-200"],
+#root [class*="text-rose-300"],
+#root [class*="text-rose-400"],
+#root [class*="text-red-300"],
+#root [class*="text-red-400"] {
+  color: var(--accent-rose) !important;
+}
+
+#root [class*="text-amber-200"],
+#root [class*="text-amber-300"],
+#root [class*="text-amber-400"],
+#root [class*="text-yellow-200"],
+#root [class*="text-yellow-300"],
+#root [class*="text-yellow-400"],
+#root [class*="text-orange-200"],
+#root [class*="text-orange-300"],
+#root [class*="text-orange-400"] {
+  color: var(--accent-amber) !important;
+}
+
+#root [class*="text-fuchsia-200"],
+#root [class*="text-fuchsia-300"],
+#root [class*="text-fuchsia-400"],
+#root [class*="text-pink-200"],
+#root [class*="text-pink-300"],
+#root [class*="text-pink-400"] {
+  color: var(--accent-violet) !important;
+}
+
+#root [class*="text-lime-200"],
+#root [class*="text-lime-300"],
+#root [class*="text-lime-400"],
+#root [class*="text-teal-200"],
+#root [class*="text-teal-300"],
+#root [class*="text-teal-400"] {
+  color: var(--accent-em) !important;
+}
+
+/* Pale (50/100) shades → primary dark text */
+#root [class*="text-rose-50"],
+#root [class*="text-rose-100"],
+#root [class*="text-emerald-50"],
+#root [class*="text-emerald-100"],
+#root [class*="text-amber-50"],
+#root [class*="text-amber-100"],
+#root [class*="text-yellow-50"],
+#root [class*="text-yellow-100"],
+#root [class*="text-violet-50"],
+#root [class*="text-violet-100"],
+#root [class*="text-fuchsia-50"],
+#root [class*="text-fuchsia-100"],
+#root [class*="text-cyan-50"],
+#root [class*="text-cyan-100"],
+#root [class*="text-sky-50"],
+#root [class*="text-sky-100"],
+#root [class*="text-pink-50"],
+#root [class*="text-pink-100"],
+#root [class*="text-lime-50"],
+#root [class*="text-lime-100"],
+#root [class*="text-teal-50"],
+#root [class*="text-teal-100"],
+#root [class*="text-white/"] {
+  color: var(--text-primary) !important;
+}
+
+/* Force dark text on light backgrounds */
+#root [class*="text-gray-700"],
+#root [class*="text-gray-800"],
+#root [class*="text-gray-900"],
+#root [class*="text-slate-700"],
+#root [class*="text-slate-800"],
+#root [class*="text-slate-900"] {
+  color: var(--text-primary) !important;
+}
+
+#root [class*="text-gray-500"],
+#root [class*="text-gray-600"],
+#root [class*="text-slate-500"],
+#root [class*="text-slate-600"] {
+  color: var(--text-secondary) !important;
+}
+
+/* Paragraphs / list items / table cells */
+#root main p,
+#root main li,
+#root main td,
+#root main th {
+  color: var(--text-primary) !important;
+}
+
+#root main [class*="text-[10px]"],
+#root main [class*="text-[9px]"],
+#root main [class*="text-[11px]"][class*="italic"] {
+  color: var(--text-tertiary) !important;
+}
+
+/* ===== BORDERS ===== */
+#root [class*="border-white/"],
+#root [class*="border-slate-"],
+#root [class*="border-gray-"] {
+  border-color: var(--border-soft) !important;
+}
+
+#root [class*="border-emerald-"] {
+  border-color: var(--accent-em) !important;
+}
+
+#root [class*="border-rose-"],
+#root [class*="border-red-"] {
+  border-color: var(--accent-rose) !important;
+}
+
+#root [class*="border-amber-"],
+#root [class*="border-yellow-"],
+#root [class*="border-orange-"] {
+  border-color: var(--accent-amber) !important;
+}
+
+#root [class*="border-violet-"],
+#root [class*="border-fuchsia-"],
+#root [class*="border-pink-"] {
+  border-color: var(--accent-violet) !important;
+}
+
+#root [class*="border-cyan-"],
+#root [class*="border-sky-"],
+#root [class*="border-blue-"] {
+  border-color: var(--accent-cyan) !important;
+}
+
+#root [class*="border-lime-"],
+#root [class*="border-teal-"] {
+  border-color: var(--accent-em) !important;
+}
+
+/* ===== INPUTS ===== */
+#root input[type="text"],
+#root input[type="number"],
+#root input[type="file"],
+#root select,
+#root textarea {
+  background: var(--bg-input) !important;
+  color: var(--text-primary) !important;
+  border: 1px solid var(--border-strong) !important;
+  border-radius: 8px !important;
+  font-family: 'Inter', sans-serif !important;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04) !important;
+}
+
+#root input::placeholder,
+#root textarea::placeholder {
+  color: var(--text-muted) !important;
+  opacity: 1 !important;
+}
+
+#root input:focus,
+#root textarea:focus,
+#root select:focus {
+  border-color: var(--accent-violet) !important;
+  box-shadow: 0 0 0 3px rgba(124, 58, 237, 0.1) !important;
+  outline: none !important;
+}
+
+#root select option {
+  background: var(--bg-input) !important;
+  color: var(--text-primary) !important;
+}
+
+/* ===== BUTTONS — clean, professional interactive elements ===== */
+#root button {
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+/* Style button group spans */
+#root button.group span[class*="inline-flex"] {
+  background: var(--bg-card) !important;
+  background-image: none !important;
+  border: 1px solid var(--border-strong) !important;
+  color: var(--text-primary) !important;
+  border-radius: 8px !important;
+  font-weight: 600 !important;
+}
+
+#root button.group:hover span[class*="inline-flex"] {
+  background: var(--bg-elev) !important;
+  border-color: var(--accent-violet) !important;
+  color: var(--accent-violet) !important;
+  box-shadow: 0 2px 8px rgba(124, 58, 237, 0.12) !important;
+}
+
+/* Generate AI Narrative — premium gradient CTA */
+#root button.group:has(svg.lucide-sparkles) span[class*="inline-flex"],
+#root button:has(svg.lucide-sparkles) span[class*="inline-flex"] {
+  background: linear-gradient(135deg, #7c3aed, #6366f1, #0891b2) !important;
+  border: 0 !important;
+  color: #ffffff !important;
+  font-weight: 700 !important;
+  letter-spacing: 0.08em !important;
+  padding: 12px 22px !important;
+  box-shadow: 0 4px 14px rgba(124, 58, 237, 0.25) !important;
+}
+
+#root button.group:has(svg.lucide-sparkles):hover span[class*="inline-flex"] {
+  background: linear-gradient(135deg, #6366f1, #0891b2, #7c3aed) !important;
+  color: #ffffff !important;
+  box-shadow: 0 6px 20px rgba(124, 58, 237, 0.35) !important;
+}
+
+/* Confirm / primary buttons — solid emerald */
+#root button[type="submit"] {
+  background: var(--accent-em) !important;
+  color: #ffffff !important;
+  border: 0 !important;
+  border-radius: 8px !important;
+  font-weight: 700 !important;
+  box-shadow: 0 2px 8px rgba(16, 185, 129, 0.2) !important;
+}
+
+/* "Confirm & Add to Defect Sheet" CTA */
+#root button.bg-gray-900,
+#root button[class*="bg-gray-900"] {
+  background: var(--accent-em) !important;
+  color: #ffffff !important;
+  border: 0 !important;
+  font-weight: 700 !important;
+  box-shadow: 0 2px 8px rgba(16, 185, 129, 0.2) !important;
+}
+
+#root button.bg-gray-900:hover,
+#root button[class*="bg-gray-900"]:hover {
+  background: #059669 !important;
+  color: #ffffff !important;
+}
+
+/* "Edit / Re-draft" — outlined */
+#root button.bg-white,
+#root button[class*="bg-white"][class*="border-gray-"] {
+  background: var(--bg-card) !important;
+  color: var(--text-primary) !important;
+  border: 1px solid var(--border-strong) !important;
+  font-weight: 600 !important;
+}
+
+#root button.bg-white:hover,
+#root button[class*="bg-white"][class*="border-gray-"]:hover {
+  background: var(--bg-elev) !important;
+  border-color: var(--accent-violet) !important;
+  color: var(--accent-violet) !important;
+}
+
+/* "Discard" outlined rose */
+#root button[class*="border-rose-300"],
+#root button[class*="border-rose-400"] {
+  background: var(--accent-rose-bg) !important;
+  border: 1px solid var(--accent-rose) !important;
+  color: var(--accent-rose) !important;
+  font-weight: 600 !important;
+}
+
+#root button[class*="border-rose-300"]:hover,
+#root button[class*="border-rose-400"]:hover {
+  background: rgba(225, 29, 72, 0.1) !important;
+  color: var(--accent-rose) !important;
+}
+
+/* ===== SIDEBAR — clean light navigation ===== */
+#root aside {
+  background: #FFFFFF !important;
+  border-right: 1px solid var(--border-soft) !important;
+  box-shadow: 2px 0 12px rgba(0, 0, 0, 0.03) !important;
+}
+
+#root aside nav {
+  padding: 16px !important;
+  gap: 6px !important;
+}
+
+#root aside nav button {
+  border: 1px solid var(--border-soft) !important;
+  background: var(--bg-card) !important;
+  border-radius: 10px !important;
+  padding: 14px 16px !important;
+  color: var(--text-secondary) !important;
+  font-weight: 600 !important;
+  cursor: pointer;
+  position: relative;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04) !important;
+  transition: all 0.2s ease;
+}
+
+#root aside nav button:hover {
+  background: var(--bg-elev) !important;
+  border-color: var(--accent-violet) !important;
+  color: var(--text-primary) !important;
+  transform: translateX(2px);
+}
+
+/* Active state — violet accent */
+#root aside nav button[class*="border-emerald-400/60"],
+#root aside nav button[class*="border-cyan-400/60"],
+#root aside nav button[class*="border-violet-400/60"],
+#root aside nav button[class*="border-amber-400/60"],
+#root aside nav button[class*="border-fuchsia-400/60"],
+#root aside nav button[class*="border-lime-400/60"] {
+  background: linear-gradient(135deg, rgba(124, 58, 237, 0.06), rgba(99, 102, 241, 0.04)) !important;
+  border: 1px solid var(--accent-violet) !important;
+  color: var(--text-primary) !important;
+  box-shadow: 0 2px 8px rgba(124, 58, 237, 0.1) !important;
+}
+
+#root aside nav button[class*="border-emerald-400/60"] span:last-child,
+#root aside nav button[class*="border-cyan-400/60"] span:last-child,
+#root aside nav button[class*="border-violet-400/60"] span:last-child,
+#root aside nav button[class*="border-amber-400/60"] span:last-child,
+#root aside nav button[class*="border-fuchsia-400/60"] span:last-child,
+#root aside nav button[class*="border-lime-400/60"] span:last-child {
+  color: var(--accent-violet) !important;
+  font-weight: 700 !important;
+}
+
+#root aside nav button svg {
+  width: 18px !important;
+  height: 18px !important;
+}
+
+/* Sidebar logo — VIBGYOR animated rainbow ring */
+#root img[alt*="COOP - AUDIT AI"] {
+  border-radius: 22px !important;
+  border: none !important;
+  padding: 0 !important;
+  box-shadow: none !important;
+  position: relative;
+  z-index: 2;
+}
+
+/* The wrapper div around the logo — becomes the rainbow ring host */
+#root div:has(> img[alt*="COOP - AUDIT AI"]) {
+  position: relative !important;
+  isolation: isolate;
+  border-radius: 24px !important;
+  padding: 4px !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  overflow: visible !important;
+}
+
+#root div:has(> img[alt*="COOP - AUDIT AI"])::before {
+  content: '';
+  position: absolute;
+  inset: -3px;
+  border-radius: 26px;
+  padding: 4px;
+  background: conic-gradient(
+    from var(--vibgyor-angle, 0deg),
+    #ee2222 0%,
+    #ff7f00 14%,
+    #f5d000 28%,
+    #2ecc40 42%,
+    #2196f3 56%,
+    #4b0082 70%,
+    #9400d3 84%,
+    #ee2222 100%
+  );
+  -webkit-mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+          mask-composite: exclude;
+  animation: vibgyor-rotate 4s linear infinite;
+  z-index: 0;
+  pointer-events: none;
+}
+
+/* Outer glow behind the rainbow ring */
+#root div:has(> img[alt*="COOP - AUDIT AI"])::after {
+  content: '';
+  position: absolute;
+  inset: -6px;
+  border-radius: 28px;
+  background: conic-gradient(
+    from var(--vibgyor-angle, 0deg),
+    rgba(238,34,34,0.2) 0%,
+    rgba(255,127,0,0.2) 14%,
+    rgba(245,208,0,0.2) 28%,
+    rgba(46,204,64,0.2) 42%,
+    rgba(33,150,243,0.2) 56%,
+    rgba(75,0,130,0.2) 70%,
+    rgba(148,0,211,0.2) 84%,
+    rgba(238,34,34,0.2) 100%
+  );
+  filter: blur(10px);
+  animation: vibgyor-rotate 4s linear infinite;
+  z-index: -1;
+  pointer-events: none;
+}
+
+/* The outer container with shadow class — clean up */
+#root div.overflow-hidden:has(img[alt*="COOP - AUDIT AI"]) {
+  box-shadow: none !important;
+  overflow: visible !important;
+  background: transparent !important;
+}
+
+/* e-PACS logo */
+#root img[alt*="e-PACS"],
+#root img[alt*="ERP for Agriculture"] {
+  background: #ffffff !important;
+  border: 2px solid var(--border-soft) !important;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06) !important;
+  padding: 4px !important;
+  border-radius: 999px !important;
+}
+
+/* Gradient pill icon wrappers — soft pastel fills */
+#root [class*="bg-gradient-to-br from-emerald-400"],
+#root [class*="bg-gradient-to-br from-lime-400"] {
+  background: linear-gradient(135deg, #d1fae5, #a7f3d0) !important;
+  background-image: linear-gradient(135deg, #d1fae5, #a7f3d0) !important;
+  border: 1px solid #6ee7b7 !important;
+  box-shadow: 0 2px 8px rgba(16, 185, 129, 0.15) !important;
+}
+
+#root [class*="bg-gradient-to-br from-violet-400"],
+#root [class*="bg-gradient-to-br from-fuchsia-400"] {
+  background: linear-gradient(135deg, #ede9fe, #ddd6fe) !important;
+  background-image: linear-gradient(135deg, #ede9fe, #ddd6fe) !important;
+  border: 1px solid #c4b5fd !important;
+  box-shadow: 0 2px 8px rgba(124, 58, 237, 0.12) !important;
+}
+
+#root [class*="bg-gradient-to-br from-rose-400"] {
+  background: linear-gradient(135deg, #ffe4e6, #fecdd3) !important;
+  background-image: linear-gradient(135deg, #ffe4e6, #fecdd3) !important;
+  border: 1px solid #fda4af !important;
+  box-shadow: 0 2px 8px rgba(225, 29, 72, 0.1) !important;
+}
+
+#root [class*="bg-gradient-to-br from-amber-400"] {
+  background: linear-gradient(135deg, #fef3c7, #fde68a) !important;
+  background-image: linear-gradient(135deg, #fef3c7, #fde68a) !important;
+  border: 1px solid #fbbf24 !important;
+  box-shadow: 0 2px 8px rgba(217, 119, 6, 0.12) !important;
+}
+
+/* Inner SVG icons — dark for readability on pastel bg */
+#root [class*="bg-gradient-to-br from-emerald-400"] svg,
+#root [class*="bg-gradient-to-br from-violet-400"] svg,
+#root [class*="bg-gradient-to-br from-amber-400"] svg,
+#root [class*="bg-gradient-to-br from-fuchsia-400"] svg,
+#root [class*="bg-gradient-to-br from-lime-400"] svg,
+#root [class*="bg-gradient-to-br from-rose-400"] svg {
+  color: var(--text-primary) !important;
+}
+
+#root [class*="text-slate-950"] {
+  color: var(--text-primary) !important;
+}
+
+/* Hide sidebar decorative blur orbs */
+#root aside .absolute[class*="rounded-full"] {
+  display: none !important;
+}
+
+/* ===== TABLES — clean financial data presentation ===== */
+#root table {
+  border: 1px solid var(--border-soft) !important;
+  border-radius: 10px !important;
+  overflow: hidden;
+  border-collapse: separate;
+  border-spacing: 0;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.03) !important;
+}
+
+#root table thead {
+  background: var(--bg-elev) !important;
+}
+
+#root table th {
+  color: var(--text-secondary) !important;
+  border-bottom: 1px solid var(--border-soft) !important;
+  font-weight: 600 !important;
+  text-align: left;
+  letter-spacing: 0.04em;
+  font-size: 11px;
+  text-transform: uppercase;
+}
+
+#root table td {
+  border-bottom: 1px solid var(--border-soft) !important;
+  color: var(--text-primary) !important;
+}
+
+#root table tbody tr:hover {
+  background: rgba(234, 230, 248, 0.4) !important;
+}
+
+/* ===== DRAG & DROP ===== */
+#root label.cursor-pointer[class*="border-dashed"] {
+  background: var(--bg-card) !important;
+  border: 2px dashed var(--border-strong) !important;
+  border-radius: 12px !important;
+}
+
+#root label.cursor-pointer[class*="border-dashed"]:hover {
+  border-color: var(--accent-violet) !important;
+  background: var(--bg-elev) !important;
+}
+
+#root label.cursor-pointer[class*="border-dashed"] h3,
+#root label.cursor-pointer[class*="border-dashed"] div.font-display {
+  color: var(--text-primary) !important;
+}
+
+/* ===== STATUS PILLS ===== */
+#root span[class*="rounded-full"][class*="border"] {
+  font-weight: 600 !important;
+  letter-spacing: 0.04em;
+}
+
+/* ===== HEADINGS ===== */
+#root h1, #root h2, #root h3, #root h4 {
+  color: var(--text-primary) !important;
+  letter-spacing: -0.018em !important;
+  font-weight: 700 !important;
+}
+
+/* ===== Section-header rows — violet left bar ===== */
+#root main > div > div > div.flex.items-center.gap-3 > div.w-1\.5,
+#root main > div > div > div.flex.items-center.gap-3 > div[class*="w-1.5"] {
+  background: linear-gradient(180deg, var(--accent-violet), var(--accent-cyan)) !important;
+  background-image: linear-gradient(180deg, var(--accent-violet), var(--accent-cyan)) !important;
+  border-radius: 4px !important;
+  width: 4px !important;
+}
+
+/* Eyebrow labels */
+#root main [class*="uppercase tracking-[0.4em]"],
+#root main [class*="uppercase tracking-[0.45em]"],
+#root main [class*="uppercase tracking-[0.35em]"] {
+  color: var(--accent-violet) !important;
+  font-weight: 700 !important;
+}
+
+/* Eyebrow with various accent colors */
+#root main [class*="text-amber-300/80"][class*="uppercase"],
+#root main [class*="text-violet-300/80"][class*="uppercase"],
+#root main [class*="text-cyan-300/80"][class*="uppercase"],
+#root main [class*="text-emerald-300/80"][class*="uppercase"],
+#root main [class*="text-rose-300/80"][class*="uppercase"],
+#root main [class*="text-fuchsia-300/80"][class*="uppercase"] {
+  font-weight: 700 !important;
+  letter-spacing: 0.3em !important;
+  color: var(--text-secondary) !important;
+}
+
+/* ===== Stat tiles ===== */
+#root main div[class*="px-3 py-2 rounded-xl"],
+#root main div[class*="px-4 py-2 rounded-xl"],
+#root main div[class*="px-4 py-3 rounded-xl"] {
+  border-width: 1px !important;
+  border-style: solid !important;
+  background-color: var(--bg-card) !important;
+}
+
+/* Emerald stat tile */
+#root main div[class*="rounded-xl bg-emerald-500/10 border border-emerald-400"],
+#root main div[class*="rounded-xl bg-emerald-500/15 border border-emerald-400"] {
+  background-color: var(--accent-em-bg) !important;
+  border-color: var(--accent-em) !important;
+}
+
+#root main div[class*="rounded-xl bg-rose-500/10 border border-rose-400"],
+#root main div[class*="rounded-xl bg-rose-500/15 border border-rose-400"] {
+  background-color: var(--accent-rose-bg) !important;
+  border-color: var(--accent-rose) !important;
+}
+
+#root main div[class*="rounded-xl bg-amber-500/10 border border-amber-400"],
+#root main div[class*="rounded-xl bg-yellow-500/10 border border-yellow-400"] {
+  background-color: var(--accent-amber-bg) !important;
+  border-color: var(--accent-amber) !important;
+}
+
+#root main div[class*="rounded-xl bg-cyan-500/10 border border-cyan-400"] {
+  background-color: var(--accent-cyan-bg) !important;
+  border-color: var(--accent-cyan) !important;
+}
+
+#root main div[class*="rounded-xl bg-violet-500/10 border border-violet-400"] {
+  background-color: var(--accent-violet-bg) !important;
+  border-color: var(--accent-violet) !important;
+}
+
+/* ===== Accent header strips ===== */
+#root main > div > div > div.bg-gradient-to-r {
+  background: linear-gradient(90deg,
+    rgba(124, 58, 237, 0.04),
+    rgba(8, 145, 178, 0.03),
+    rgba(16, 185, 129, 0.04)
+  ) !important;
+  background-image: linear-gradient(90deg,
+    rgba(124, 58, 237, 0.04),
+    rgba(8, 145, 178, 0.03),
+    rgba(16, 185, 129, 0.04)
+  ) !important;
+  border-bottom: 1px solid var(--border-soft) !important;
+}
+
+/* Top accent line strips */
+#root main [class*="h-px bg-gradient-to-r"] {
+  background: linear-gradient(90deg,
+    transparent,
+    var(--accent-violet),
+    var(--accent-cyan),
+    var(--accent-em),
+    transparent
+  ) !important;
+  background-image: linear-gradient(90deg,
+    transparent,
+    var(--accent-violet),
+    var(--accent-cyan),
+    var(--accent-em),
+    transparent
+  ) !important;
+  height: 1px !important;
+  opacity: 0.4;
+}
+
+/* ===== LAYOUT spacing ===== */
+#root main {
+  padding: 36px !important;
+  background: transparent !important;
+}
+
+@media (max-width: 1024px) {
+  #root main {
+    padding: 20px !important;
   }
-  to {
-    opacity: 1;
-    transform: translateX(0);
-    filter: blur(0);
+}
+
+/* ===== Blur halos / decorative elements — hide ===== */
+#root .blur-2xl,
+#root .blur-3xl,
+#root .blur-xl,
+#root .blur-lg,
+#root .blur-md {
+  display: none !important;
+}
+
+#root [class*="backdrop-blur"] {
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+
+#root .animate-pulse,
+#root .animate-ping,
+#root .animate-bounce,
+#root .animate-spin {
+  animation: none !important;
+}
+
+/* Inline gradient pill icons (override) */
+#root [class*="bg-gradient-to-br from-emerald-400"],
+#root [class*="bg-gradient-to-br from-violet-400"],
+#root [class*="bg-gradient-to-br from-amber-400"],
+#root [class*="bg-gradient-to-br from-fuchsia-400"],
+#root [class*="bg-gradient-to-br from-lime-400"],
+#root [class*="bg-gradient-to-br from-rose-400"] {
+  background: var(--bg-elev) !important;
+  background-image: none !important;
+  border: 1px solid var(--border-soft) !important;
+}
+
+/* Horizontal gradient strips */
+#root [class*="h-px bg-gradient-to-r"] {
+  background: var(--border-soft) !important;
+  background-image: none !important;
+}
+
+/* ============================================================
+   Elegant accent border — subtle lavender glow on major panels
+   ============================================================ */
+
+/* Soft accent border on major panels */
+#root main > div > div.rounded-\[32px\],
+#root main > div > div.rounded-\[28px\],
+#root main > div > div > div.rounded-\[28px\],
+#root main label.cursor-pointer.block[class*="rounded-["],
+#root main > div > div.relative[class*="rounded-\[28px\]"],
+#root main > div > div.relative[class*="rounded-\[32px\]"],
+#root main > div > div.space-y-6 > div.relative[class*="rounded-\[28px\]"],
+#root main > div > div.space-y-5 > div[class*="rounded-\[24px\]"] {
+  position: relative;
+  isolation: isolate;
+  border: 1px solid var(--border-soft) !important;
+  box-shadow: 0 1px 4px rgba(124, 58, 237, 0.04), 0 4px 24px rgba(0, 0, 0, 0.03) !important;
+}
+
+/* Remove the rainbow rotating border — replace with static subtle glow */
+#root main > div > div.rounded-\[32px\]::before,
+#root main > div > div.rounded-\[28px\]::before,
+#root main > div > div > div.rounded-\[28px\]::before,
+#root main label.cursor-pointer.block[class*="rounded-["]::before,
+#root main > div > div.relative[class*="rounded-\[28px\]"]::before,
+#root main > div > div.relative[class*="rounded-\[32px\]"]::before,
+#root main > div > div.space-y-6 > div.relative[class*="rounded-\[28px\]"]::before,
+#root main > div > div.space-y-5 > div[class*="rounded-\[24px\]"]::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  padding: 1px;
+  background: linear-gradient(
+    135deg,
+    rgba(124, 58, 237, 0.15),
+    rgba(8, 145, 178, 0.1),
+    rgba(16, 185, 129, 0.1),
+    rgba(124, 58, 237, 0.08)
+  );
+  -webkit-mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+          mask-composite: exclude;
+  z-index: 1;
+  pointer-events: none;
+}
+
+/* Gradient text headings — elegant violet-to-teal */
+#root .gradient-text,
+#root .gradient-text-fire {
+  background: linear-gradient(
+    135deg,
+    #7c3aed, #6366f1, #0891b2, #10b981
+  ) !important;
+  background-size: 100% auto !important;
+  -webkit-background-clip: text !important;
+          background-clip: text !important;
+  -webkit-text-fill-color: transparent !important;
+  color: transparent !important;
+  animation: none !important;
+  font-weight: 700;
+}
+
+/* ===== Scrollbar — minimal elegant ===== */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--text-muted);
+}
+
+/* ===== VIBGYOR animated focus ring for chat input ===== */
+@keyframes vibgyor-border-shift {
+  0%   { border-color: #ee2222; box-shadow: 0 0 0 3px rgba(238,34,34,0.15); }
+  14%  { border-color: #ff7f00; box-shadow: 0 0 0 3px rgba(255,127,0,0.15); }
+  28%  { border-color: #f5d000; box-shadow: 0 0 0 3px rgba(245,208,0,0.15); }
+  42%  { border-color: #2ecc40; box-shadow: 0 0 0 3px rgba(46,204,64,0.15); }
+  56%  { border-color: #2196f3; box-shadow: 0 0 0 3px rgba(33,150,243,0.15); }
+  70%  { border-color: #4b0082; box-shadow: 0 0 0 3px rgba(75,0,130,0.15); }
+  84%  { border-color: #9400d3; box-shadow: 0 0 0 3px rgba(148,0,211,0.15); }
+  100% { border-color: #ee2222; box-shadow: 0 0 0 3px rgba(238,34,34,0.15); }
+}
+
+.vibgyor-input-focus {
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.vibgyor-input-focus:focus {
+  border-width: 2px !important;
+  animation: vibgyor-border-shift 3s linear infinite !important;
+}
+
+/* ===== Print layout — audit result, uploaded documents & missing files ===== */
+@media print {
+  /* keep colors/backgrounds in the printout */
+  * {
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
+
+  /* white page, no decorative gradient */
+  html, body, #root {
+    background: #ffffff !important;
+  }
+
+  /* hide interactive / decorative chrome that shouldn't print */
+  .no-print,
+  aside nav {
+    display: none !important;
+  }
+
+  /* let the sidebar collapse so content flows full width */
+  aside {
+    width: 100% !important;
+    min-height: auto !important;
+    border: none !important;
+    background: #ffffff !important;
+  }
+
+  main {
+    overflow: visible !important;
+  }
+
+  /* avoid awkward breaks inside cards */
+  .anim-slide-up,
+  table,
+  tr {
+    page-break-inside: avoid;
   }
 }
 
-@keyframes slideUpFade {
-  from {
-    opacity: 0;
-    transform: translateY(30px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
+/* ===== Glossy two-tone gradient border for the upload drop-zone ===== */
+.glossy-border-box {
+  position: relative;
+  border-radius: 28px;
+  border: 4px solid transparent;
+  background:
+    linear-gradient(#ffffff, #ffffff) padding-box,
+    linear-gradient(130deg, #7c3aed 0%, #a855f7 22%, #22d3ee 58%, #10b981 100%) border-box;
+  background-size: 100% 100%, 220% 220%;
+  background-position: 0 0, 0% 50%;
+  box-shadow:
+    0 10px 34px rgba(124, 58, 237, 0.16),
+    0 4px 14px rgba(16, 185, 129, 0.12);
+  animation: glossy-border-pan 6s ease-in-out infinite;
+  transition: transform 0.3s ease, box-shadow 0.3s ease;
 }
 
-@keyframes float {
-  0%, 100% { transform: translateY(0); }
-  50% { transform: translateY(-6px); }
+/* glossy moving sheen across the surface */
+.glossy-border-box::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: 24px;
+  background: linear-gradient(
+    115deg,
+    transparent 30%,
+    rgba(255, 255, 255, 0.55) 47%,
+    rgba(255, 255, 255, 0.85) 50%,
+    rgba(255, 255, 255, 0.55) 53%,
+    transparent 70%
+  );
+  background-size: 250% 250%;
+  pointer-events: none;
+  mix-blend-mode: overlay;
+  opacity: 0.7;
+  animation: glossy-sheen 5s ease-in-out infinite;
 }
 
-@keyframes orbit {
-  0% { transform: rotate(0deg) translateX(8px) rotate(0deg); }
-  100% { transform: rotate(360deg) translateX(8px) rotate(-360deg); }
+.glossy-border-box:hover {
+  transform: translateY(-2px) scale(1.005);
+  box-shadow:
+    0 16px 44px rgba(124, 58, 237, 0.26),
+    0 6px 18px rgba(16, 185, 129, 0.2);
 }
 
-@keyframes scanline {
-  0% { transform: translateY(-100%); }
-  100% { transform: translateY(100%); }
+@keyframes glossy-border-pan {
+  0%   { background-position: 0 0, 0% 50%; }
+  50%  { background-position: 0 0, 100% 50%; }
+  100% { background-position: 0 0, 0% 50%; }
 }
 
-@keyframes shake {
-  0%, 100% { transform: translateX(0); }
-  25% { transform: translateX(-2px); }
-  75% { transform: translateX(2px); }
+@keyframes glossy-sheen {
+  0%   { background-position: 150% 0%; }
+  60%  { background-position: -50% 0%; }
+  100% { background-position: -50% 0%; }
 }
-
-/* Page-scan beam — sweeps from top to bottom of its parent */
-@keyframes pageScan {
-  0%   { top: 0%;   opacity: 0; }
-  8%   { opacity: 1; }
-  50%  { top: 100%; opacity: 1; }
-  58%  { opacity: 1; }
-  100% { top: 0%;   opacity: 0; }
-}
-
-/* Trailing glow that follows the beam */
-@keyframes pageScanTrail {
-  0%   { top: -2.5rem; }
-  50%  { top: calc(100% - 0.5rem); }
-  100% { top: -2.5rem; }
-}
-
-@keyframes blink {
-  0%, 100% { opacity: 1; }
-  50%      { opacity: 0.18; }
-}
-
-@keyframes successGlow {
-  0%, 100% {
-    box-shadow: 0 0 30px rgba(52, 211, 153, 0.45),
-      inset 0 0 25px rgba(52, 211, 153, 0.08);
-  }
-  50% {
-    box-shadow: 0 0 60px rgba(52, 211, 153, 0.75),
-      inset 0 0 40px rgba(52, 211, 153, 0.15);
-  }
-}
-
-.anim-row { animation: rowSlideIn 0.6s cubic-bezier(0.16, 1, 0.3, 1) both; }
-.anim-slide-up { animation: slideUpFade 0.7s cubic-bezier(0.16, 1, 0.3, 1) both; }
-.anim-float { animation: float 3s ease-in-out infinite; }
-.anim-shake { animation: shake 0.6s ease-in-out infinite; }
-.anim-page-scan { animation: pageScan 1.8s ease-in-out infinite; }
-.anim-page-scan-trail { animation: pageScanTrail 1.8s ease-in-out infinite; }
-.anim-blink { animation: blink 0.85s ease-in-out infinite; }
-.anim-success-glow { animation: successGlow 2.2s ease-in-out infinite; }

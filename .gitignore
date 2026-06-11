@@ -12,6 +12,11 @@ dist
 dist-ssr
 *.local
 
+# Local environment secrets (API keys)
+.env
+.env.*
+!.env.example
+
 # Build artefacts
 release/
 *.exe
