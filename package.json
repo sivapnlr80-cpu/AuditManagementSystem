@@ -1,7 +1,7 @@
 {
   "name": "coop-audit-ai",
   "private": true,
-  "version": "0.0.0",
+  "version": "2.0.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -9,7 +9,9 @@
     "lint": "eslint .",
     "preview": "vite preview",
     "start": "node server.cjs",
-    "pack:exe": "npm run build && pkg server.cjs --targets node18-win-x64 --output COOP-AUDIT-AI.exe --compress GZip"
+    "pack:exe": "node scripts/pack.mjs",
+    "pack:exe:minor": "node scripts/pack.mjs --minor",
+    "pack:exe:major": "node scripts/pack.mjs --major"
   },
   "bin": "server.cjs",
   "pkg": {

@@ -6,23 +6,29 @@ import {
   ScrollText, FileArchive, ShieldCheck, Sparkles, Activity, CheckCircle2,
   XCircle, ListChecks, Building2, FileCheck2, BadgeCheck, Award,
   MessagesSquare, FilePlus2, Send, Trash2, Bot, User as UserIcon,
-  KeyRound, Zap, AlertCircle, FileText,
+  KeyRound, Zap, AlertCircle, FileText, ClipboardCheck,
 } from 'lucide-react';
 
 import logoImage from './assets/logo.png';
 import auditLogo from './assets/audit-logo.png';
-import epacsLogo from './assets/epacs.png';
 
 import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 PDFJS.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
 
-async function extractPDFText(zipEntry) {
-  const pdfData = await zipEntry.async('uint8array');
+import { AuditContext } from './context/AuditContext';
+import { APP_VERSION } from './version';
+import DashboardView from './views/DashboardView';
+import UploadDocumentsView from './views/UploadDocumentsView';
+import ReportAnalysisView from './views/ReportAnalysisView';
+import AuditDefectsView from './views/AuditDefectsView';
+import LegalChatView from './views/LegalChatView';
+import DefectSheetGeneratorView from './views/DefectSheetGeneratorView';
+import ConcurrentAuditView from './views/ConcurrentAuditView';
 
-  const pdfDocument = await PDFJS.getDocument({
-    data: pdfData,
-  }).promise;
-
+// Extract the full text of an already-parsed PDF document. Kept separate from
+// extractPDFText so a single parsed document can be reused for both the full-text
+// pass and the schedule-specific parsers (avoids re-parsing the same PDF).
+async function extractTextFromDoc(pdfDocument) {
   let extractedText = '';
 
   for (
@@ -42,6 +48,16 @@ async function extractPDFText(zipEntry) {
   }
 
   return extractedText;
+}
+
+async function extractPDFText(zipEntry) {
+  const pdfData = await zipEntry.async('uint8array');
+
+  const pdfDocument = await PDFJS.getDocument({
+    data: pdfData,
+  }).promise;
+
+  return extractTextFromDoc(pdfDocument);
 }
 
 function cleanCurrency(value) {
@@ -807,6 +823,180 @@ async function parsePdfArrayBufferToPages(buffer, label) {
   return { name: label, pages };
 }
 
+/* ════════════════════════════════════════════════════════════════════
+ * CONCURRENT AUDIT / PERIODICAL INSPECTION — analysis helpers
+ * Used by the "Concurrent Audit / Periodical Inspection — Defect Sheet
+ * Generator" section: scans an uploaded statement (e.g. Trial Balance)
+ * and emits categorised, statute-cited defects, on top of which the user
+ * may add custom defects via generateDefectNarrative().
+ * ════════════════════════════════════════════════════════════════════ */
+
+// Abbreviation glossary (module-level twin of the defectSheet pass) so the
+// concurrent sheet reads in complete terms too.
+const CA_ABBR_GLOSSARY = [
+  ['CC&RCS', 'Commissioner for Cooperation & Registrar of Coop. Societies, A.P., Guntur'],
+  ['CEO', 'Chief Executive Officer'],
+  ['GB', 'General Body'],
+  ['MC', 'Managing Committee'],
+  ['PACS', 'Primary Agricultural Credit Society'],
+  ['APCS', 'Andhra Pradesh Cooperative Societies'],
+  ['ERP', 'Enterprise Resource Planning'],
+  ['FAS', 'Financial Accounting System'],
+  ['DCT', 'Digital Capture Tool'],
+  ['TB', 'Trial Balance'],
+  ['BDR', 'Bad Debt Reserve'],
+  ['BDP', 'Business Development Plan'],
+  ['KYC', 'Know Your Customer'],
+  ['NABARD', 'National Bank for Agriculture and Rural Development'],
+  ['NPA', 'Non-Performing Asset'],
+  ['CAS', 'Common Accounting System'],
+  ['GoI', 'Government of India'],
+];
+
+function caExpandAbbr(text) {
+  if (!text) return text;
+  let out = text
+    .replace(/\bu\/s\b/gi, 'under Section')
+    .replace(/\br\/w\b/gi, 'read with')
+    .replace(/\bdt\.\s*/gi, 'dated ')
+    .replace(/\bPara\b/g, 'Paragraph');
+  for (const [abbr, full] of CA_ABBR_GLOSSARY) {
+    const esc = abbr.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const re = new RegExp(`(?<![\\w&])${esc}(s)?(?![\\w&])`, 'g');
+    let definePending = !out.includes(full);
+    out = out.replace(re, (m, s) => {
+      const sfx = s || '';
+      if (definePending) {
+        definePending = false;
+        return `${full}${sfx} (${abbr}${sfx})`;
+      }
+      return `${full}${sfx}`;
+    });
+  }
+  return out;
+}
+
+// Uniform auditor opening for the concurrent sheet.
+function caPrependObservation(text) {
+  if (!text) return text;
+  let core = text.trim();
+  if (/^during the period under/i.test(core)) return text;
+  core = core.replace(/^it is observed that[,:]?\s+/i, '');
+  const firstWord = core.split(/\s+/)[0] || '';
+  const isProper =
+    /[-–—]/.test(firstWord) ||
+    /^[A-Z]{2,}/.test(firstWord) ||
+    /^[A-Z][a-z]+[A-Z]/.test(firstWord);
+  const body = isProper ? core : core.charAt(0).toLowerCase() + core.slice(1);
+  return `During the period under concurrent audit / periodical inspection, it is observed that, ${body}`;
+}
+
+// Keyword-driven defect rules. Each match contributes one defect. Narratives
+// are written to start lower-case so they flow after the standard opening.
+const CONCURRENT_DEFECT_RULES = [
+  {
+    id: 'parking',
+    test: (t) => /parking\s*account/.test(t),
+    category: 'financial',
+    title:
+      'Un-Reconciled "Parking" Balances in the Trial Balance — CC&RCS SOP dt. 20.08.2024',
+    narrative:
+      'one or more "Parking Account" heads appear in the Trial Balance, representing un-reconciled balances carried during the PACS computerisation. Per CC&RCS Memo No. AGC06-12021/2/2019-PMC SEC-CCRCS dt. 20.08.2024 (Operational Guidelines for Creation of Un-Reconciled / Parking Accounts) r/w SOP for Clearing Parking Balances (File No. AGC06-13/6/2024-PAC SEC-CCRCS), such balances must be investigated, reconciled and cleared to their proper GL heads at the earliest. The CEO is directed to reconcile and clear the parked balances u/s 54 r/w Section 55-A, APCS Act, 1964 before finalisation of accounts.',
+  },
+  {
+    id: 'reserveFund',
+    test: (t) => /reserve\s*fund/.test(t),
+    category: 'accounting',
+    title: 'Appropriation to Reserve Fund — Section 45 r/w Rule 36',
+    narrative:
+      'the Reserve Fund appears in the statement, but the concurrent audit could not confirm that at least one-fourth (25%) of the net profit for the year has been carried to the Reserve Fund as required u/s 45, APCS Act, 1964 r/w Rule 36 of the APCS Rules, 1964. The CEO/MC is directed to demonstrate the prescribed appropriation and place the same before the GB.',
+  },
+  {
+    id: 'plAppropriation',
+    test: (t) => /profit\s*(and|&)?\s*loss\s*appropriation|net\s*profit|surplus/.test(t),
+    category: 'accounting',
+    title: 'Appropriation of Net Profit Pending — Section 45 r/w Bye-laws',
+    narrative:
+      'a balance is seen under the Profit & Loss Appropriation Account; appropriation of net profit to the Reserve Fund, dividend, Common Good Fund and other statutory funds is required to be made as per Section 45, APCS Act, 1964, the Rules and the Society\'s bye-laws, duly approved by the GB. The CEO is directed to complete the statutory appropriations and produce the GB resolution.',
+  },
+  {
+    id: 'riskFund',
+    test: (t) => /bad\s*debt\s*reserve|risk\s*fund|\bbdr\b/.test(t),
+    category: 'financial',
+    title: 'Adequacy of Bad Debt / Risk Fund Provisioning — NABARD IRAC Norms',
+    narrative:
+      'Bad Debt Reserve / Risk Fund heads appear in the statement; the concurrent audit could not satisfy itself that provisioning against NPAs is adequate as per NABARD IRAC norms r/w the CAS Manual and Section 55-A, APCS Act, 1964. The CEO is directed to compute the graded provision required and make good any shortfall.',
+  },
+  {
+    id: 'recapitalisation',
+    test: (t) =>
+      /recapitalis|\bgrants?\b|contribution from (g\.?o\.?i|state)/.test(t),
+    category: 'financial',
+    title:
+      'Utilisation of Grants / Recapitalisation Assistance — Conditions of Sanction',
+    narrative:
+      'Grants / Recapitalisation Assistance Fund balances appear in the statement; their utilisation must strictly follow the conditions of sanction and be separately accounted. The concurrent audit could not verify end-use; the CEO is directed to produce utilisation particulars together with the sanction conditions.',
+  },
+  {
+    id: 'suspense',
+    test: (t) => /suspense|sundry/.test(t),
+    category: 'accounting',
+    title: 'Suspense / Sundry Balances Pending Clearance — Section 55-A',
+    narrative:
+      'Suspense / Sundry balances appear in the statement and are liable to be reviewed and cleared to their correct heads without delay, as their continuance impairs the true and fair view of the accounts (Section 55-A, APCS Act, 1964 r/w the CAS Manual). The CEO is directed to clear the said balances and report compliance.',
+  },
+];
+
+// Extract the inspection period and a society/branch label, where present.
+function extractConcurrentMeta(text, fileName) {
+  const t = text || '';
+  const periodMatch = t.match(
+    /from\s*date\s*:?\s*([0-9][0-9\-\/.]{6,})\s*to\s*([0-9][0-9\-\/.]{6,})/i
+  );
+  const period = periodMatch
+    ? `${periodMatch[1].trim()} to ${periodMatch[2].trim()}`
+    : '';
+  const branchMatch = t.match(/(?:DCCB\s*)?Branch\s*:?\s*([A-Za-z0-9 .&-]{2,40})/i);
+  const branch = branchMatch ? branchMatch[1].trim() : '';
+  const base = (fileName || 'Statement').replace(/\.[^.]+$/, '');
+  return { period, branch, societyName: base };
+}
+
+// Build the auto-detected defect list from extracted statement text.
+function analyzeConcurrentAudit(text) {
+  const lower = (text || '').toLowerCase();
+  const detected = [];
+  for (const rule of CONCURRENT_DEFECT_RULES) {
+    if (rule.test(lower)) {
+      detected.push({
+        category: rule.category,
+        title: rule.title,
+        narrative: rule.narrative,
+        source: 'auto',
+      });
+    }
+  }
+  // Negative / abnormal closing balances (heuristic: a hyphen-prefixed amount).
+  if (/(?:^|\s)-\s?\d[\d,]*\.\d{2}/.test(text || '')) {
+    detected.push({
+      category: 'financial',
+      title: 'Negative / Abnormal Balances Observed — Section 55-A',
+      narrative:
+        'one or more heads disclose a negative or abnormal closing balance, which ordinarily should not arise and points to a mis-posting or an un-reconciled difference. The CEO is directed to examine and rectify the abnormal balances u/s 54 r/w Section 55-A, APCS Act, 1964.',
+      source: 'auto',
+    });
+  }
+  // Always append the concurrent-audit scope reservation.
+  detected.push({
+    category: 'administrative',
+    title: 'Concurrent Audit Scope — Verification on Records Produced',
+    narrative:
+      'this concurrent audit / periodical inspection has been conducted on the basis of the statement and records produced; non-availability or suppression of primary records may leave irregularities undiscernible and is not attributable to the inspecting officer. Responsibility for the maintenance and production of books rests on the MC and the CEO u/s 55-A r/w Rules 58 & 59, APCS Act, 1964.',
+    source: 'auto',
+  });
+  return detected;
+}
+
 // Search corpus: returns top-K page snippets for a query.
 // Scoring = sum of term-frequency weighted by inverse keyword length
 // boost, with a small bonus for exact phrase match.
@@ -880,8 +1070,21 @@ function classifyDocument(fileName) {
  * Mirrors the concise 3-5 sentence style of the existing defect
  * narratives across B.1/B.2/B.3 categories.
  * ================================================================ */
-function generateDefectNarrative(title, userText, category) {
-  const seed = `${title} ${userText}`.toLowerCase();
+function generateDefectNarrative(userText, category, mode) {
+  // Detect an inline narration-mode trigger ("MODE: HIT" / "/hit" /
+  // "MODE: RUN" / "/run") at the start of the note and strip it so the
+  // keyword does not leak into the narration. An explicit `mode` argument
+  // (from the HIT/RUN toggle) always wins over the typed trigger.
+  let effectiveMode = mode || null;
+  let cleanedText = (userText || '').trim();
+  const trig = cleanedText.match(
+    /^\s*(?:\/(hit|run)\b|mode\s*:\s*(hit|run)\b)[\s:.\-—]*/i
+  );
+  if (trig) {
+    if (!effectiveMode) effectiveMode = (trig[1] || trig[2]).toLowerCase();
+    cleanedText = cleanedText.slice(trig[0].length).trim();
+  }
+  const seed = cleanedText.toLowerCase();
 
   // Citation rules — first match wins per topic
   const topics = [
@@ -1051,17 +1254,108 @@ function generateDefectNarrative(title, userText, category) {
     'Failure to rectify shall attract direction by the Registrar under Section 54 of the APCS Act, 1964, and surcharge under Section 60 of the Act for any consequential loss to the Society.';
 
   // Concise auditor's narrative — 3-5 sentences
-  const userObservation = userText.trim();
+  const userObservation = cleanedText;
   const opening = userObservation
     ? userObservation
-    : `The Society has failed to maintain compliance in respect of "${title}".`;
+    : 'The Society has failed to maintain the compliance noted below.';
   const cite = matched.citations.join('; ');
 
-  const narrative = `${opening} This constitutes ${catLabel}, contrary to ${cite}. The defect undermines ${matched.framing}, and exposes the Chief Executive Officer and Managing Committee to responsibility. The Chief Executive Officer is hereby directed to undertake immediate corrective action, document the rectification in the Defect Rectification Register, and produce the rectified position at the next monthly audit. ${escalation}`;
+  // The factual observation, terminated cleanly for use mid-sentence.
+  const obs = userObservation
+    ? /[.?!]$/.test(userObservation)
+      ? userObservation
+      : `${userObservation}.`
+    : '';
+
+  // Default (neutral) narration.
+  const neutralNarrative = `${opening} This constitutes ${catLabel}, contrary to ${cite}. The defect undermines ${matched.framing}, and exposes the Chief Executive Officer and Managing Committee to responsibility. The Chief Executive Officer is hereby directed to undertake immediate corrective action, document the rectification in the Defect Rectification Register, and produce the rectified position at the next monthly audit. ${escalation}`;
+
+  // MODE: HIT — Strict / Hard-Stop. Prima-facie violation, conclusive and
+  // non-equivocal, no mitigating circumstance, concluding with the exact
+  // statutory remedy (no penalty quantum, no claim of adjudication).
+  const hitNarrative = `The Society has contravened ${cite}.${
+    obs ? ` ${obs}` : ''
+  } This constitutes ${catLabel} and is a clear violation of the said provision, which admits of no exception in the matter; the act is in direct breach of the statutory mandate and is irregular to that extent. The Chief Executive Officer / Managing Committee responsible is liable for surcharge under Section 60 of the APCS Act, 1964, apart from rectification of the defect under Section 54 of the Act.`;
+
+  // MODE: RUN — Flexible / Running-Action. Interpretable position, notes the
+  // carve-out/condition, balanced and advisory, regularisable on production
+  // of the requisite record, expressly open to the competent authority.
+  const runNarrative = `It is observed that${
+    obs
+      ? ` ${obs}`
+      : ' the Society appears to have deviated from the governing provision noted below.'
+  } The governing provision, ${cite}, ordinarily applies subject to the exceptions/conditions stipulated therein — and to any deviation permitted by the bye-laws or sanctioned by the General Body — which on the records produced are not seen to be fulfilled. The matter, being ${catLabel}, is presently noted as irregular and is capable of being regularised upon production of the requisite approval or record (such as the relevant resolution, sanction order or supporting voucher). Pending such clarification, the position is advisory in nature and remains open to interpretation by the competent authority / General Body / Registrar.`;
+
+  const narrative =
+    effectiveMode === 'hit'
+      ? hitNarrative
+      : effectiveMode === 'run'
+      ? runNarrative
+      : neutralNarrative;
+
+  // ── AUTO-TITLE ── derive the defect heading FROM the narrative/observation,
+  // styled like the auto-generated Audit Defects headings: "<Heading> — <Section ref>".
+  // The title field was removed from the generator UI; the AI now narrates the title.
+  const headingByFraming = {
+    'cash retention discipline and prompt remittance to the financing bank':
+      'Excess Cash Retention & Delayed Remittance',
+    'periodical review of overdue loans and timely legal action against defaulters':
+      'Inadequate Recovery & Legal Action on Overdue Loans',
+    'application of interest rates and reconciliation of interest collected against the simple-interest baseline':
+      'Interest Application & Reconciliation Discrepancy',
+    'graded provisioning discipline and prudent recognition of credit risk':
+      'IRAC Provisioning Deficiency on NPAs',
+    'compliance with the prescribed ceilings on Cost of Management (50%) and Staff Cost (30%) of Total Income':
+      'Cost of Management Exceeds Prescribed Ceiling',
+    'asset-liability matching and financial soundness':
+      'Financial Imbalance — Asset-Liability Mismatch',
+    'placement of accounts and audit reports before the General Body':
+      'Accounts Not Placed Before General Body',
+    'maintenance and authentication of prescribed books, registers and vouchers':
+      'Improper Maintenance of Books, Registers & Vouchers',
+    'preparation of an approved annual budget and business development plan':
+      'Absence of Approved Budget & Business Development Plan',
+    'safeguarding of Society funds and surcharge action for loss caused':
+      'Suspected Misappropriation of Society Funds',
+    'rectification of defects noticed in the audit conducted under Section 50':
+      'Non-Rectification of Audit Defects',
+    'reconciliation of Sundry ledgers and integrity of receivable / payable classifications':
+      'Unreconciled Sundry Debtors / Creditors',
+    'maintenance and utilisation of share capital and reserve funds':
+      'Share Capital & Reserve Fund Irregularity',
+    'statutory tax compliance and timely deposit of TDS / GST':
+      'Statutory Tax / TDS Non-Compliance',
+  };
+
+  // Short statutory tag, e.g. "Section 115-D", "Rule 41(C)(6)", "Para 6.12.1".
+  const shortCite = (c) => {
+    const m = c.match(
+      /^(Section\s+[\w().-]+|Rule\s+[\w().-]+|Paragraph\s+[\d.]+)/i
+    );
+    if (m) return m[1].replace(/^Paragraph/i, 'Para');
+    if (/NABARD/i.test(c)) return 'NABARD norms';
+    return c.split(' of ')[0];
+  };
+
+  // Fallback heading for novel/unmatched defects: distil it from the narration.
+  const deriveSubject = (text) => {
+    let s = (text || '').trim().replace(/\s+/g, ' ');
+    s = s.split(/(?<=[.!?])\s/)[0].replace(/[.;:,]+$/, '');
+    if (s.length > 72) s = s.slice(0, 72).replace(/\s+\S*$/, '') + '…';
+    return s
+      ? s.charAt(0).toUpperCase() + s.slice(1)
+      : 'Statutory & Governance Compliance Lapse';
+  };
+
+  const heading =
+    headingByFraming[matched.framing] || deriveSubject(userObservation);
+  const title = `${heading} — ${shortCite(matched.citations[0])}`;
 
   return {
+    title,
     narrative,
     citations: matched.citations,
+    mode: effectiveMode,
   };
 }
 
@@ -1371,6 +1665,19 @@ async function runAiKeyTest() {
   });
   const [defectPreview, setDefectPreview] = useState(null); // { title, category, aiNarrative, citations }
 
+  // ----- Concurrent Audit / Periodical Inspection -----
+  const [concurrentFileName, setConcurrentFileName] = useState('');
+  const [concurrentMeta, setConcurrentMeta] = useState(null); // { period, branch, societyName }
+  const [concurrentDetected, setConcurrentDetected] = useState([]); // auto-found defects
+  const [concurrentCustom, setConcurrentCustom] = useState([]); // user-added defects
+  const [concurrentProcessing, setConcurrentProcessing] = useState(false);
+  const [concurrentError, setConcurrentError] = useState('');
+  const [concurrentDraft, setConcurrentDraft] = useState({
+    category: 'financial',
+    narrative: '',
+  });
+  const [concurrentPreview, setConcurrentPreview] = useState(null);
+
   // Legal reference corpus — bundled PDFs + user-uploaded references.
   // corpusStatus: 'idle' | 'loading' | 'ready' | 'error'
   const [corpus, setCorpus] = useState([]); // [{ id, name, pages: [{n, text}], source: 'bundled' | 'user' }]
@@ -1505,22 +1812,17 @@ async function runAiKeyTest() {
       demerits.push({
         category: 'accounting',
         title:
-          'Non-Production of Statutory Reports — Para 7.1, Audit Manual',
-        narrative: `${missingFiles.length} prescribed report(s) not produced from ERP. Violation of Para 7.1, Audit Manual for PACS r/w Section 55-A, APCS Act, 1964. CEO directed to produce complete reports at next audit; non-compliance attracts Section 54 directions.`,
+          'Non-Production of Statutory Reports & Loan Files — Para 7.1, Audit Manual r/w Section 55-A',
+        narrative: `${missingFiles.length} of the prescribed report${
+          missingFiles.length === 1 ? '' : 's'
+        } could not be generated from the ERP system and ${
+          missingFiles.length === 1 ? 'was' : 'were'
+        } therefore not available for verification. More importantly, the Society did not place before the audit the loan files and loan ledgers, the sanction proceedings, the security and mortgage documents, or the connected subsidiary registers. In their absence, the audit could not satisfy itself as to the genuineness of the loans disbursed, the eligibility and creditworthiness of the borrowers, the rate of interest charged, the adequacy of the security held, or the present recovery position. Keeping and producing these books and records is the responsibility of the MC and the CEO under Section 55-A, APCS Act, 1964 (r/w Rules 58 & 59) and Para 7.1 of the Audit Manual for PACS. The CEO is requested to place the complete set of statutory reports, together with all loan files and connected records, before the next audit. Until that is done the audit stands qualified to this extent, and continued non-production may invite directions u/s 54 and surcharge u/s 60 of the Act for any loss caused to the Society.`,
       });
     }
 
-    // 2) MATERIAL ACCURACY OF FINANCIAL STATEMENTS — Section 50 + 55-A
+    // 2) Per-statement mismatch demerits — Section 50 + 55-A + CAS Manual
     const mismatched = auditResults.filter((r) => !r.tallied);
-    if (auditResults.length > 0 && mismatched.length === 0) {
-      merits.push({
-        title:
-          'Financial Statements — Mathematically Accurate',
-        narrative: `All primary financial statements tally correctly. Double-entry principles under CAS Manual and Section 55-A, APCS Act, 1964 duly complied. Ledger integrity commended.`,
-      });
-    }
-
-    // 3) Per-statement mismatch demerits — Section 50 + 55-A + CAS Manual
     mismatched.forEach((r) => {
       demerits.push({
         category: 'accounting',
@@ -1537,29 +1839,36 @@ async function runAiKeyTest() {
       );
     if (hasTrailBalance) {
       demerits.push({
-        category: 'accounting',
+        category: 'financial',
         title:
-          'Trail Balance — Unreconciled Module–FAS Differences Parked (Auditor SOP)',
-        narrative: `Module–FAS differences under the named product heads — Share Capital, Deposits and Loans — are liable to stand parked in the Trail Balance, leaving such balances unverified. Per e-Audit SOP, Auditor Login (FAS ▸ Reports ▸ Module & FAS), the prior-year closing TB must tally with the current-year opening TB and all module–FAS differences cleared by raising a ticket to NLPSV. CEO directed u/s 54, APCS Act, 1964 r/w Section 55-A to reconcile and clear the parked differences before finalisation of accounts.`,
+          'Un-Reconciled "Parking" Balances Not Cleared — CC&RCS SOP dt. 20.08.2024',
+        narrative: `Module–FAS differences under the named product heads (Share Capital, Deposits, Loans) stand parked as un-reconciled "Parking Accounts" in the Trail Balance and remain unverified. Per CC&RCS Memo No. AGC06-12021/2/2019-PMC SEC-CCRCS dt. 20.08.2024 (Operational Guidelines for Creation of Un-Reconciled / Parking Accounts) r/w SOP for Clearing Parking Balances (File No. AGC06-13/6/2024-PAC SEC-CCRCS), such balances must be investigated, reconciled and cleared to their proper GL heads at the earliest, with prior-year closing TB tallied to current-year opening TB. CEO directed u/s 54 r/w Section 55-A, APCS Act, 1964 to reconcile and clear the parked differences before finalisation of accounts.`,
       });
     }
 
     // 4) ANNEXURE-8 (Total Income / Cost of Management) — Section 115-D
     const annex8 = auditNarratives.find((n) => n.key === 'annexure8');
-    if (annex8 && annex8.status === 'merit') {
+    const annex8Pct = auditNarratives.find(
+      (n) => n.key === 'annexure8Pct'
+    );
+    const annex8PctDemerit = !!(
+      annex8Pct && annex8Pct.status === 'demerit'
+    );
+    // Positive Total Income is a MERIT only when the Section 115-D
+    // eligibility ratios are also within limits. If Staff Cost / COM exceed
+    // their ceilings, the positive income is merely the base on which the
+    // breach is measured — it is reported inside the demerit, not celebrated
+    // as a standalone merit.
+    if (annex8 && annex8.status === 'merit' && !annex8PctDemerit) {
       merits.push({
         title:
-          'Operational Performance — Section 115-D Compliant',
-        narrative: annex8.narrative,
-      });
-    } else if (annex8 && annex8.status === 'demerit') {
-      demerits.push({
-        category: 'financial',
-        title:
-          'Cost of Management — Section 115-D Non-Compliance',
+          'Positive Total Income — Annexure-8 (Section 115-D Base)',
         narrative: annex8.narrative,
       });
     }
+    // NOTE: the Annexure-8 Section 115-D demerit is MERGED with the
+    // Annexure-8 % (Staff Cost / COM ratio) check below into a single
+    // Cost-of-Management demerit — both flag the same Section 115-D defect.
 
     // 5) ANNEXURE-11 (Legal Action Coverage) — Section 30(xxii) + Rule 41(C)(6)
     const annex11 = auditNarratives.find((n) => n.key === 'annexure11');
@@ -1578,22 +1887,31 @@ async function runAiKeyTest() {
       });
     }
 
-    // 5b) ANNEXURE-8 PERCENTAGE — Staff Cost % / COM %
-    const annex8Pct = auditNarratives.find(
-      (n) => n.key === 'annexure8Pct'
-    );
+    // 5b) ANNEXURE-8 PERCENTAGE — Staff Cost % / COM % (annex8Pct declared in §4)
     if (annex8Pct && annex8Pct.status === 'merit') {
       merits.push({
         title:
           'Staff Cost & COM Ratios — Within Norms',
         narrative: annex8Pct.narrative,
       });
-    } else if (annex8Pct && annex8Pct.status === 'demerit') {
+    }
+
+    // MERGED Section 115-D / Cost-of-Management demerit:
+    // Annexure-8 (absolute COM vs Total Income) and Annexure-8 % (Staff
+    // Cost / COM ratios) both address the same Section 115-D defect, so
+    // they are reported as ONE concise demerit (was two duplicate items).
+    const com115Parts = [
+      annex8 && annex8.status === 'demerit' ? annex8.narrative : null,
+      annex8Pct && annex8Pct.status === 'demerit'
+        ? annex8Pct.narrative
+        : null,
+    ].filter(Boolean);
+    if (com115Parts.length > 0) {
       demerits.push({
         category: 'financial',
         title:
-          'Staff Cost / COM Exceeds Norms — Section 115-D',
-        narrative: annex8Pct.narrative,
+          'Cost of Management Exceeds Norms — Section 115-D',
+        narrative: com115Parts.join(' '),
       });
     }
 
@@ -1631,30 +1949,11 @@ async function runAiKeyTest() {
       });
     }
 
-    // 5e1) SCHEDULE 16B — Sundry Debtors aged > 3 years (non-realisable)
-    const sched16b = auditNarratives.find(
-      (n) => n.key === 'schedule16b'
-    );
-    if (sched16b && sched16b.status === 'demerit') {
-      demerits.push({
-        category: 'financial',
-        title:
-          'Schedule-16B — Non-Realisable Sundry Debtors (>3 Years)',
-        narrative: sched16b.narrative,
-      });
-    }
-
     // 5e) BALANCE SHEET — Sundry Debtors & Sundry Creditors
     const sdc = auditNarratives.find(
       (n) => n.key === 'sundryDebtorsCreditors'
     );
-    if (sdc && sdc.status === 'merit') {
-      merits.push({
-        title:
-          'Sundry Debtors & Creditors — Balances Clean',
-        narrative: sdc.narrative,
-      });
-    } else if (sdc && sdc.status === 'demerit') {
+    if (sdc && sdc.status === 'demerit') {
       demerits.push({
         category: 'accounting',
         title:
@@ -1664,9 +1963,15 @@ async function runAiKeyTest() {
     }
 
     // 5e-bis) SCHEDULE-16B — Sundry Debtors aged > 3 years
-    const sch16b = auditNarratives.find(
+    // Single, concise entry (the earlier duplicate financial demerit was removed).
+    // Two parsers can emit a 'schedule16b' narrative for the same file; if EITHER
+    // detects dues above 3 years (a demerit), that must win over a "no dues" merit
+    // — otherwise genuine non-realisable balances get wrongly reported as clean.
+    const sch16bAll = auditNarratives.filter(
       (n) => n.key === 'schedule16b'
     );
+    const sch16b =
+      sch16bAll.find((n) => n.status === 'demerit') || sch16bAll[0];
     if (sch16b && sch16b.status === 'merit') {
       merits.push({
         title:
@@ -1674,11 +1979,12 @@ async function runAiKeyTest() {
         narrative: sch16b.narrative,
       });
     } else if (sch16b && sch16b.status === 'demerit') {
+      const above3 = sch16b.above3Total || sch16b.metricValue || '';
       demerits.push({
         category: 'financial',
         title:
-          'Schedule-16B — Sundry Debtors >3 Years (Section 30(xxii) r/w Rule 41(C)(6))',
-        narrative: sch16b.narrative,
+          'Schedule-16B — Non-Realisable Sundry Debtors (>3 Years), Section 30(xxii) r/w Rule 41(C)(6)',
+        narrative: `Schedule-16B (Sundry Debtors) discloses ${above3} under "Due from above 3 years — No scope for realization (100%)". Being time-barred/irrecoverable, these dues require 100% provision in Schedule-9 per the CAS Manual r/w NABARD IRAC norms; their non-recovery is a material defect u/s 30(xxii), APCS Act, 1964 r/w Rule 41(C)(6) and Section 55-A. The CEO is directed u/s 54 to pursue recovery/legal action, create full provisioning, place the matter before the Managing Committee for write-off of irrecoverable items, and report rectification at the next audit.`,
       });
     }
 
@@ -1779,6 +2085,83 @@ async function runAiKeyTest() {
       });
     });
 
+    // ── EXPAND ABBREVIATIONS ── render the observation sheet in complete
+    // terms: spell out short forms on first use as "Full Form (ABBR)" and
+    // expand common legal contractions, across every merit/demerit narrative.
+    const ABBR_GLOSSARY = [
+      [
+        'CC&RCS',
+        'Commissioner for Cooperation & Registrar of Coop. Societies, A.P., Guntur',
+      ],
+      ['CEO', 'Chief Executive Officer'],
+      ['GB', 'General Body'],
+      ['MC', 'Managing Committee'],
+      ['PACS', 'Primary Agricultural Credit Society'],
+      ['APCS', 'Andhra Pradesh Cooperative Societies'],
+      ['ERP', 'Enterprise Resource Planning'],
+      ['FAS', 'Financial Accounting System'],
+      ['DCT', 'Digital Capture Tool'],
+      ['TB', 'Trail Balance'],
+      ['BDP', 'Business Development Plan'],
+      ['KYC', 'Know Your Customer'],
+      ['NABARD', 'National Bank for Agriculture and Rural Development'],
+      ['COM', 'Cost of Management'],
+      ['SOP', 'Standard Operating Procedure'],
+      ['GST', 'Goods and Services Tax'],
+      ['TDS', 'Tax Deducted at Source'],
+      ['NPA', 'Non-Performing Asset'],
+    ];
+    const expandAbbr = (text) => {
+      if (!text) return text;
+      let out = text
+        .replace(/\bu\/s\b/gi, 'under Section')
+        .replace(/\br\/w\b/gi, 'read with')
+        .replace(/\bdt\.\s*/gi, 'dated ')
+        .replace(/\bPara\b/g, 'Paragraph');
+      for (const [abbr, full] of ABBR_GLOSSARY) {
+        const esc = abbr.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const re = new RegExp(`(?<![\\w&])${esc}(s)?(?![\\w&])`, 'g');
+        // First standalone mention → "Full (ABBR)"; later mentions → "Full".
+        // If the full form is already written out, every mention → "Full".
+        let definePending = !out.includes(full);
+        out = out.replace(re, (m, s) => {
+          const sfx = s || '';
+          if (definePending) {
+            definePending = false;
+            return `${full}${sfx} (${abbr}${sfx})`;
+          }
+          return `${full}${sfx}`;
+        });
+      }
+      return out;
+    };
+    // ── UNIFORM OPENING ── every merit/demerit narrative opens with the
+    // auditor's standard observation phrase. The original opening letter is
+    // lower-cased so it flows after the phrase, unless it begins with a
+    // proper noun / acronym (e.g. "Annexure-8", "Schedule-16B", "Module–FAS",
+    // "APCS"). A leading "It is observed that" in the body is stripped to
+    // avoid duplication (e.g. RUN-mode custom defects).
+    const prependObservation = (text) => {
+      if (!text) return text;
+      let core = text.trim();
+      if (/^during the year under audit/i.test(core)) return text;
+      core = core.replace(/^it is observed that[,:]?\s+/i, '');
+      const firstWord = core.split(/\s+/)[0] || '';
+      const isProperNoun =
+        /[-–—]/.test(firstWord) ||
+        /^[A-Z]{2,}/.test(firstWord) ||
+        /^[A-Z][a-z]+[A-Z]/.test(firstWord);
+      const body = isProperNoun
+        ? core
+        : core.charAt(0).toLowerCase() + core.slice(1);
+      return `During the year under audit, it is observed that, ${body}`;
+    };
+    const expandList = (arr) =>
+      arr.map((x) => ({
+        ...x,
+        narrative: expandAbbr(prependObservation(x.narrative)),
+      }));
+
     // Compile audit date and society
     const today = new Date();
     const auditDate = `${String(today.getDate()).padStart(2, '0')}-${String(today.getMonth() + 1).padStart(2, '0')}-${today.getFullYear()}`;
@@ -1786,8 +2169,8 @@ async function runAiKeyTest() {
     return {
       societyName: societyName || 'Society',
       auditDate,
-      merits,
-      demerits,
+      merits: expandList(merits),
+      demerits: expandList(demerits),
     };
   }, [
     auditResults,
@@ -1920,14 +2303,21 @@ async function runAiKeyTest() {
         try {
           if (!zipEntry.dir && entryName.toLowerCase().endsWith('.pdf')) {
             setCurrentProcessingFile(entryName);
-            // small delay so each file flashes visibly in UI
-            await new Promise((r) => setTimeout(r, 220));
 
             uploadedPdfFiles.push(entryName);
 
             const lowerName = entryName.toLowerCase();
 
-            const pdfText = await extractPDFText(zipEntry);
+            // Decompress + parse this PDF only ONCE, then reuse the parsed
+            // document for the full-text pass and every schedule-specific
+            // parser below. Memoised so repeated getEntryDoc() calls are free.
+            let _entryDocPromise = null;
+            const getEntryDoc = () =>
+              (_entryDocPromise ??= zipEntry
+                .async('uint8array')
+                .then((data) => PDFJS.getDocument({ data }).promise));
+
+            const pdfText = await extractTextFromDoc(await getEntryDoc());
 
             // Detect tabular financial data.
             // Step 1: Heal PDF.js spacing artefacts inside numbers,
@@ -1982,11 +2372,7 @@ async function runAiKeyTest() {
               lowerName.includes('trail') &&
               lowerName.includes('balance')
             ) {
-              const pdfBytes = await zipEntry.async('uint8array');
-
-              const pdfDocument = await PDFJS.getDocument({
-                data: pdfBytes,
-              }).promise;
+              const pdfDocument = await getEntryDoc();
 
               async function extractRightAmountFromPage(pageNumber) {
                 if (pageNumber > pdfDocument.numPages) {
@@ -2058,11 +2444,7 @@ async function runAiKeyTest() {
               lowerName.includes('trading') &&
               lowerName.includes('account')
             ) {
-              const pdfBytes = await zipEntry.async('uint8array');
-
-              const pdfDocument = await PDFJS.getDocument({
-                data: pdfBytes,
-              }).promise;
+              const pdfDocument = await getEntryDoc();
 
               let drAmount = 0;
               let crAmount = 0;
@@ -2213,11 +2595,7 @@ async function runAiKeyTest() {
               lowerName.includes('account') &&
               !lowerName.includes('appropriation')
             ) {
-              const pdfBytes = await zipEntry.async('uint8array');
-
-              const pdfDocument = await PDFJS.getDocument({
-                data: pdfBytes,
-              }).promise;
+              const pdfDocument = await getEntryDoc();
 
               let expenditureAmount = 0;
               let incomeAmount = 0;
@@ -2363,11 +2741,7 @@ async function runAiKeyTest() {
               lowerName.includes('loss') &&
               lowerName.includes('appropriation')
             ) {
-              const pdfBytes = await zipEntry.async('uint8array');
-
-              const pdfDocument = await PDFJS.getDocument({
-                data: pdfBytes,
-              }).promise;
+              const pdfDocument = await getEntryDoc();
 
               let expenditureAmount = 0;
               let incomeAmount = 0;
@@ -2512,11 +2886,7 @@ async function runAiKeyTest() {
               lowerName.includes('balance') &&
               lowerName.includes('sheet')
             ) {
-              const pdfBytes = await zipEntry.async('uint8array');
-
-              const pdfDocument = await PDFJS.getDocument({
-                data: pdfBytes,
-              }).promise;
+              const pdfDocument = await getEntryDoc();
 
               const amountRegex =
                 /\d{1,3}(?:,\d{2,3})+(?:\.\d{2})?/g;
@@ -2647,7 +3017,7 @@ async function runAiKeyTest() {
               });
 
               // === Sundry Debtors & Sundry Creditors — Closing Balance check ===
-              const bsTextRaw = await extractPDFText(zipEntry);
+              const bsTextRaw = await extractTextFromDoc(await getEntryDoc());
               const bsHealed = bsTextRaw.replace(
                 /(\d)\s*,\s*(?=\d)/g,
                 '$1,'
@@ -2719,10 +3089,7 @@ async function runAiKeyTest() {
 
             // === Schedule-9 — Provisions on NPA, Overdue Interest, Bad & Doubtful Debtors ===
             if (/schedule[\s\-]*9(?![0-9a-g])/i.test(entryName)) {
-              const pdfBytesS9 = await zipEntry.async('uint8array');
-              const docS9 = await PDFJS.getDocument({
-                data: pdfBytesS9,
-              }).promise;
+              const docS9 = await getEntryDoc();
 
               const amtRe9 =
                 /-?\d{1,3}(?:,\d{2,3})+(?:\.\d{1,2})?|-?\d+\.\d{2}/g;
@@ -2872,10 +3239,7 @@ async function runAiKeyTest() {
 
             // === Schedule-16B — Sundry Debtors audit (Due > 3 years) ===
             if (/schedule[\s\-]*16[\s\-]*b\b/i.test(entryName)) {
-              const pdfBytes16B = await zipEntry.async('uint8array');
-              const docS16B = await PDFJS.getDocument({
-                data: pdfBytes16B,
-              }).promise;
+              const docS16B = await getEntryDoc();
 
               const amtRe16 =
                 /^(?:\d{1,3}(?:,\d{2,3})+(?:\.\d{1,2})?|\d+\.\d{1,2})$/;
@@ -2884,6 +3248,7 @@ async function runAiKeyTest() {
               let accountsAbove3Yrs = 0;
               let totalClosingBalance = 0;
               let pagesProcessed = 0;
+              let summaryAbove3 = 0;
 
               for (
                 let pn = 1;
@@ -2900,11 +3265,40 @@ async function runAiKeyTest() {
                   }))
                   .filter((it) => it.text);
 
-                // Find the label "above 3 years"
+                // (A) Classification SUMMARY total for the ">3yr / No scope /
+                // 100%" bucket. On the schedule's summary page this bucket total
+                // sits on the label line, while the per-account detail column is
+                // often entirely 0.00. Robust to the label text being split
+                // across PDF items (e.g. "Due from above 3" + "years(₹)/No scope").
+                const noScopeYs = items
+                  .filter(
+                    (it) =>
+                      it.x < 170 &&
+                      /(100\s*%|no\s*scope|for\s*realization|realisation)/i.test(
+                        it.text
+                      )
+                  )
+                  .map((it) => it.y);
+                if (noScopeYs.length) {
+                  const sAmts = items
+                    .filter(
+                      (it) =>
+                        it.x > 150 &&
+                        amtRe16.test(it.text) &&
+                        noScopeYs.some(
+                          (ay) => Math.abs(it.y - ay) <= 16
+                        )
+                    )
+                    .map((it) => parseFloat(it.text.replace(/,/g, '')))
+                    .filter((v) => !Number.isNaN(v) && v > 0);
+                  if (sAmts.length)
+                    summaryAbove3 = Math.max(summaryAbove3, ...sAmts);
+                }
+
+                // (B) Per-account detail (for schedules that itemise the column).
+                // Match on "above 3" — the full phrase is split across items.
                 const aboveLabel = items.find(
-                  (it) =>
-                    /above\s*3\s*years/i.test(it.text) &&
-                    it.x < 250
+                  (it) => /above\s*3/i.test(it.text) && it.x < 250
                 );
                 // Find the label "Closing Balance"
                 const closingLabel = items.find(
@@ -2913,8 +3307,8 @@ async function runAiKeyTest() {
                     it.x < 250
                 );
 
-                if (!aboveLabel) continue;
-                pagesProcessed += 1;
+                if (aboveLabel) {
+                  pagesProcessed += 1;
 
                 // Values are BELOW the label in PDF coords (smaller y)
                 // Look for amount items within 35 units below the label
@@ -2922,7 +3316,7 @@ async function runAiKeyTest() {
                   (it) =>
                     it.y < aboveLabel.y &&
                     aboveLabel.y - it.y <= 35 &&
-                    it.x >= 155 &&
+                    it.x >= 140 &&
                     amtRe16.test(it.text)
                 );
                 // Group by Y (rounded) and take the most populous Y as the value row
@@ -2941,7 +3335,7 @@ async function runAiKeyTest() {
                     .filter(
                       (it) =>
                         Math.abs(it.y - valueY) <= 1.5 &&
-                        it.x >= 155 &&
+                        it.x >= 140 &&
                         amtRe16.test(it.text)
                     )
                     .map((it) =>
@@ -2956,6 +3350,7 @@ async function runAiKeyTest() {
                     }
                   }
                 }
+                } // end if (aboveLabel) — per-account detail
 
                 // Also sum closing balance for context
                 if (closingLabel) {
@@ -3010,7 +3405,11 @@ async function runAiKeyTest() {
                   maximumFractionDigits: 2,
                 })}`;
 
-              const isMerit16 = accountsAbove3Yrs === 0;
+              // Prefer the larger of the itemised per-account sum and the
+              // classification summary total (the summary carries the figure
+              // when the detail column is not itemised, as in eAudit exports).
+              totalAbove3Yrs = Math.max(totalAbove3Yrs, summaryAbove3);
+              const isMerit16 = totalAbove3Yrs <= 0;
 
               const merit16 = `Verification of Schedule-16B (Sundry Debtors) of the Society confirms that there are no accounts with dues outstanding for more than three (3) years; all Sundry Debtor balances aggregating to ${fmt16(totalClosingBalance)} are within the recoverable age-bracket. This reflects diligent monitoring of receivables by the Managing Committee in discharge of its duty under Section 30(xxii) of the Andhra Pradesh Cooperative Societies Act, 1964 (review of overdues and defaulters), and timely action by the Chief Executive Officer in compliance with Rule 41(C)(6) of the APCS Rules, 1964 (declaration of overdue debtors once every quarter). The Sundry Debtors ageing posture conforms to the NABARD IRAC norms read with the Manual on Chart of Accounts (CAS) for PACS and is commended from an audit standpoint.`;
 
@@ -3022,7 +3421,11 @@ async function runAiKeyTest() {
                 title:
                   'Schedule-16B · Sundry Debtors (Above 3 Years)',
                 metricLabel: 'Accts > 3 yrs · Total',
-                metricValue: `${accountsAbove3Yrs} acct(s) · ${fmt16(totalAbove3Yrs)}`,
+                metricValue:
+                  accountsAbove3Yrs > 0
+                    ? `${accountsAbove3Yrs} acct(s) · ${fmt16(totalAbove3Yrs)}`
+                    : fmt16(totalAbove3Yrs),
+                above3Total: fmt16(totalAbove3Yrs),
                 status: isMerit16 ? 'merit' : 'demerit',
                 narrative: isMerit16 ? merit16 : demerit16,
               });
@@ -3030,10 +3433,7 @@ async function runAiKeyTest() {
 
             // === Annexure-5 — Calculation of Imbalance audit ===
             if (/annexure[\s\-]*5(?![0-9])/i.test(entryName)) {
-              const pdfBytesA5 = await zipEntry.async('uint8array');
-              const docA5 = await PDFJS.getDocument({
-                data: pdfBytesA5,
-              }).promise;
+              const docA5 = await getEntryDoc();
 
               const amtReA5 =
                 /-?\d{1,3}(?:,\d{2,3})+(?:\.\d{1,2})?|-?\d+\.\d{2}/g;
@@ -3137,10 +3537,7 @@ async function runAiKeyTest() {
 
             // === Annexure-8 — Total Income (Previous Year) audit ===
             if (/annexure[\s\-]*8(?![0-9])/i.test(entryName)) {
-              const pdfBytes = await zipEntry.async('uint8array');
-              const pdfDocument = await PDFJS.getDocument({
-                data: pdfBytes,
-              }).promise;
+              const pdfDocument = await getEntryDoc();
 
               const annexAmountRegex =
                 /-?\d{1,3}(?:,\d{2,3})+(?:\.\d{1,2})?|-?\d+\.\d{1,2}/g;
@@ -3219,7 +3616,7 @@ async function runAiKeyTest() {
                   maximumFractionDigits: 2,
                 });
 
-                const meritNarrative = `Annexure-8 verification shows the Society generated a positive Total Income of ₹${formatted} in the previous year, supporting the prescribed ceilings under Section 115-D of the APCS Act, 1964 and NABARD norms — Cost of Management at 50% (₹${com50}) and Staff Cost at 30% (₹${staff30}). The Managing Committee and Chief Executive Officer are commended for sound revenue generation and prudent financial stewardship.`;
+                const meritNarrative = `Annexure-8 verification shows the Society generated a positive Total Income of ₹${formatted} in the previous year, which provides a valid base for the Section 115-D ceilings of the APCS Act, 1964 read with NABARD norms — Cost of Management capped at 50% (₹${com50}) and Staff Cost at 30% (₹${staff30}) of Total Income. The Managing Committee and Chief Executive Officer are commended for positive revenue generation; eligibility against the said ceilings is separately assessed from the Staff Cost % / COM % ratios in Annexure-8.`;
                 const demeritNarrative = `Annexure-8 shows the Society's Total Income for the previous year at ₹${formatted}, which is at or below zero. With a negative income base, the Section 115-D ceilings — Cost of Management (50%) and Staff Cost (30%) — become inoperative, rendering the Society ineligible to incur such expenses to that extent and exposing the CEO (under Section 55-A) and Managing Committee to joint responsibility. The CEO is directed to augment interest income, pursue overdue recovery under Section 30(xxii) read with Rule 41(C)(6), and rationalise expenditure; persistent non-compliance attracts direction under Section 54 of the Act.`;
 
                 narrativesAccum.push({
@@ -3310,12 +3707,68 @@ async function runAiKeyTest() {
                         maximumFractionDigits: 2,
                       })}%`;
 
+                // Section 115-D eligibility ceilings: Staff Cost ≤ 30% and
+                // Cost of Management ≤ 50% of Total Income. A ratio is a
+                // demerit if it EXCEEDS its ceiling, or is negative (which
+                // arises only on a negative income base).
+                const STAFF_LIMIT = 30;
+                const COM_LIMIT = 50;
                 const negativeStaff = sc !== null && sc < 0;
                 const negativeCOM = cm !== null && cm < 0;
-                const isDemeritPct = negativeStaff || negativeCOM;
+                const exceedsStaff = sc !== null && sc > STAFF_LIMIT;
+                const exceedsCOM = cm !== null && cm > COM_LIMIT;
+                const isDemeritPct =
+                  negativeStaff ||
+                  negativeCOM ||
+                  exceedsStaff ||
+                  exceedsCOM;
 
-                const meritPct = `Annexure-8 shows positive ratios — Staff Cost at ${scFmt} and Cost of Management at ${cmFmt} of Total Income. Computed on a positive income base, these ratios indicate a measurable foundation against which the Section 115-D ceilings (30% / 50%) may be tested. The Managing Committee is expected to consolidate this position and keep the ratios within the prescribed limits.`;
-                const demeritPct = `Annexure-8 discloses a NEGATIVE Staff Cost percentage (${scFmt}) ${negativeCOM ? 'and NEGATIVE Cost of Management percentage (' + cmFmt + ') ' : '(COM at ' + cmFmt + ') '}of Total Income. A negative ratio arises only on a negative income base, meaning expenditures have outstripped income for the period. With a negative base, the Section 115-D ceilings become inoperative, rendering the Society ineligible to incur staff salaries and management expenses to that extent. The Managing Committee and CEO shall pursue augmentation of interest income, overdue recovery under Section 30(xxii) read with Rule 41(C)(6) and rigorous expense control; persistent breach attracts direction under Section 54.`;
+                // Precise description of each ceiling breach.
+                const breaches = [];
+                if (exceedsStaff)
+                  breaches.push(
+                    `the Staff Cost ratio at ${scFmt} exceeds the prescribed ceiling of 30% of Total Income`
+                  );
+                else if (negativeStaff)
+                  breaches.push(
+                    `the Staff Cost ratio is negative (${scFmt}), which arises only on a negative income base`
+                  );
+                if (exceedsCOM)
+                  breaches.push(
+                    `the Cost of Management ratio at ${cmFmt} exceeds the prescribed ceiling of 50% of Total Income`
+                  );
+                else if (negativeCOM)
+                  breaches.push(
+                    `the Cost of Management ratio is negative (${cmFmt}), which arises only on a negative income base`
+                  );
+                const breachText = breaches.join('; and ');
+                const hasNegative = negativeStaff || negativeCOM;
+
+                // Concrete eligibility figures, when the income base is known.
+                const hasIncomeBase =
+                  typeof totalIncomePrevYear === 'number' &&
+                  totalIncomePrevYear > 0;
+                const fmtAmt = (v) =>
+                  `₹${v.toLocaleString('en-IN', {
+                    minimumFractionDigits: 2,
+                    maximumFractionDigits: 2,
+                  })}`;
+                const eligCtx = hasIncomeBase
+                  ? ` On a Total Income of ${fmtAmt(
+                      totalIncomePrevYear
+                    )}, the Section 115-D eligibility limits are ${fmtAmt(
+                      totalIncomePrevYear * 0.3
+                    )} (30%) for Staff Cost and ${fmtAmt(
+                      totalIncomePrevYear * 0.5
+                    )} (50%) for Cost of Management.`
+                  : '';
+
+                const meritPct = `Annexure-8 shows Staff Cost at ${scFmt} (ceiling 30%) and Cost of Management at ${cmFmt} (ceiling 50%) of Total Income — both within the eligibility limits prescribed under Section 115-D of the APCS Act, 1964 read with NABARD norms. The Managing Committee and CEO are commended for keeping establishment and management costs within the permissible ratios.`;
+                const demeritPct = `Annexure-8 discloses that ${breachText}, in breach of the Section 115-D eligibility ceilings of the APCS Act, 1964 read with NABARD norms (Staff Cost 30% and Cost of Management 50% of Total Income).${eligCtx} ${
+                  hasNegative
+                    ? 'A negative ratio indicates expenditure has outstripped income for the period, rendering the ceilings inoperative and the Society ineligible to incur the said costs to that extent. '
+                    : 'The expenditure in excess of the prescribed ceiling is irregular to that extent. '
+                }The Managing Committee and CEO shall pursue augmentation of interest income, overdue recovery under Section 30(xxii) read with Rule 41(C)(6) and rigorous expense control to bring the ratios within the prescribed limits; persistent breach attracts direction under Section 54 and surcharge under Section 60.`;
 
                 narrativesAccum.push({
                   key: 'annexure8Pct',
@@ -3380,10 +3833,7 @@ async function runAiKeyTest() {
 
             // === Schedule-16B — Sundry Debtors aged > 3 years (No scope for realization) ===
             if (/schedule[\s\-]*16[\s\-]*b/i.test(entryName)) {
-              const pdfBytes = await zipEntry.async('uint8array');
-              const docS16B = await PDFJS.getDocument({
-                data: pdfBytes,
-              }).promise;
+              const docS16B = await getEntryDoc();
 
               const amtRe16B =
                 /-?\d{1,3}(?:,\d{2,3})+(?:\.\d{1,2})?|-?\d+\.\d{1,2}/g;
@@ -3481,6 +3931,7 @@ async function runAiKeyTest() {
                     'Schedule-16B · Sundry Debtors Aged > 3 Years (Non-Realisable)',
                   metricLabel: 'Aged > 3 Years · 100% Provision Required',
                   metricValue: fmt16B(total3plus),
+                  above3Total: fmt16B(total3plus),
                   status: 'demerit',
                   narrative: `Schedule-16B discloses Sundry Debtors of ${fmt16B(total3plus)} classified as "Due from above 3 years — No scope for realisation (100%)". Continued retention of these aged balances without full 100% provisioning or write-off breaches Section 55-A of the APCS Act, 1964, the NABARD IRAC norms and the CAS Manual, and overstates net realisable assets. The CEO shall (i) prepare a party-wise ageing schedule for the Managing Committee, (ii) make full 100% provisioning in the books, (iii) issue Section 71 recovery notices where still maintainable, and (iv) move a write-off resolution before the General Body for irrecoverable items; failure attracts direction under Section 54 and surcharge consideration under Section 60.`,
                 });
@@ -3496,9 +3947,6 @@ async function runAiKeyTest() {
 
       setCurrentStage('Compiling audit report…');
       setCurrentProcessingFile('');
-
-      // brief pause so the final "Compiling…" stage is visible
-      await new Promise((r) => setTimeout(r, 400));
 
       // === Trail Balance narrative — uses the audit-tally result ===
       const trailBalanceResult = results.find(
@@ -3742,6 +4190,159 @@ async function runAiKeyTest() {
       highestCB,
       highestDate,
     };
+  }
+
+  // ── Concurrent Audit / Periodical Inspection — PDF upload & analysis ──
+  async function handleConcurrentUpload(file) {
+    if (!file) return;
+    setConcurrentProcessing(true);
+    setConcurrentError('');
+    setConcurrentDetected([]);
+    setConcurrentMeta(null);
+    setConcurrentFileName(file.name || '');
+    try {
+      const buffer = await file.arrayBuffer();
+      const parsed = await parsePdfArrayBufferToPages(buffer, file.name);
+      const fullText = parsed.pages.map((p) => p.text).join('\n');
+      if (!fullText.trim()) {
+        setConcurrentError(
+          'No readable text could be extracted from the PDF. It may be a scanned image — please upload a text-based statement.'
+        );
+        setConcurrentProcessing(false);
+        return;
+      }
+      const meta = extractConcurrentMeta(fullText, file.name);
+      const detected = analyzeConcurrentAudit(fullText);
+      setConcurrentMeta(meta);
+      setConcurrentDetected(detected);
+    } catch (e) {
+      console.error('Concurrent audit parse error:', e);
+      setConcurrentError(
+        'Could not read the PDF. Please ensure it is a valid, text-based statement and try again.'
+      );
+    }
+    setConcurrentProcessing(false);
+  }
+
+  // Derived concurrent defect sheet: auto-detected + user-added, with the
+  // uniform opening phrase and abbreviation expansion applied (same style as
+  // the Audit Defects sheet).
+  const concurrentSheet = useMemo(() => {
+    const all = [
+      ...concurrentDetected,
+      ...concurrentCustom.map((d) => ({
+        category: d.category,
+        title: d.title,
+        narrative: d.narrative,
+        source: 'custom',
+      })),
+    ];
+    if (all.length === 0) return null;
+    const demerits = all.map((d) => ({
+      category: d.category,
+      title: d.title,
+      narrative: caExpandAbbr(caPrependObservation(d.narrative)),
+      source: d.source,
+    }));
+    const today = new Date();
+    const inspDate = `${String(today.getDate()).padStart(2, '0')}-${String(
+      today.getMonth() + 1
+    ).padStart(2, '0')}-${today.getFullYear()}`;
+    return {
+      societyName: (concurrentMeta && concurrentMeta.societyName) || 'Society',
+      period: (concurrentMeta && concurrentMeta.period) || '',
+      branch: (concurrentMeta && concurrentMeta.branch) || '',
+      inspDate,
+      demerits,
+    };
+  }, [concurrentDetected, concurrentCustom, concurrentMeta]);
+
+  // Print / download the concurrent inspection defect sheet (plain document).
+  function printConcurrentSheet() {
+    if (!concurrentSheet || concurrentSheet.demerits.length === 0) {
+      alert('No defects to print. Upload a statement and analyse it first.');
+      return;
+    }
+    const escapeHtml = (s) =>
+      String(s)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+    const categories = [
+      { key: 'financial', label: 'B.1 · FINANCIAL IRREGULARITIES' },
+      { key: 'accounting', label: 'B.2 · ACCOUNTING IRREGULARITIES' },
+      { key: 'administrative', label: 'B.3 · ADMINISTRATIVE IRREGULARITIES' },
+    ];
+    let runningNo = 0;
+    const body = categories
+      .map((c) => {
+        const items = concurrentSheet.demerits.filter(
+          (d) => d.category === c.key
+        );
+        if (items.length === 0) return '';
+        return `
+          <h3 class="subhead">${escapeHtml(c.label)}</h3>
+          <ol class="items" start="${runningNo + 1}">
+            ${items
+              .map((d) => {
+                runningNo += 1;
+                return `<li><div class="item-title">${escapeHtml(
+                  d.title
+                )}</div><p class="item-narrative">${escapeHtml(
+                  d.narrative
+                )}</p></li>`;
+              })
+              .join('')}
+          </ol>`;
+      })
+      .join('');
+    const html = `<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8" />
+<title>CONCURRENT AUDIT — ${escapeHtml(concurrentSheet.societyName)}</title>
+<style>
+  *{box-sizing:border-box}
+  body{font-family:'Times New Roman',Times,serif;color:#000;background:#fff;margin:0;padding:28px 36px 60px;font-size:12pt;line-height:1.55}
+  .doc-header{text-align:center;border-bottom:2px solid #000;padding-bottom:10px;margin-bottom:14px}
+  .society{font-size:14pt;font-weight:700;margin:0 0 4px}
+  .doc-title{font-size:15pt;font-weight:800;letter-spacing:.06em;margin:4px 0 0}
+  .meta{display:flex;justify-content:space-between;flex-wrap:wrap;gap:6px;font-size:10.5pt;margin:8px 0 14px}
+  .subhead{font-size:12pt;font-weight:800;margin:16px 0 6px;border-bottom:1px solid #000;padding-bottom:3px}
+  ol.items{margin:0 0 8px;padding-left:26px}
+  ol.items li{margin-bottom:10px}
+  .item-title{font-weight:700}
+  .item-narrative{margin:2px 0 0;text-align:justify}
+  .doc-footer{margin-top:22px;border-top:1px solid #000;padding-top:8px;font-size:10pt;text-align:center}
+  .actions{position:fixed;top:10px;right:14px;display:flex;gap:6px}
+  .actions button{background:#111;color:#fff;border:0;padding:8px 14px;font-weight:700;cursor:pointer;border-radius:4px}
+  @page{size:A4 portrait;margin:14mm}
+  @media print{.actions{display:none}body{padding:0}}
+</style></head><body>
+<div class="actions">
+  <button onclick="window.print()">🖨️ Print / Save as PDF</button>
+  <button onclick="window.close()">✕ Close</button>
+</div>
+<div class="doc-header">
+  <p class="society">${escapeHtml(concurrentSheet.societyName)} — Primary Agricultural Cooperative Credit Society Ltd.</p>
+  <p class="doc-title">CONCURRENT AUDIT / PERIODICAL INSPECTION — DEFECT SHEET</p>
+</div>
+<div class="meta">
+  ${concurrentSheet.period ? `<div><b>Period :</b> ${escapeHtml(concurrentSheet.period)}</div>` : ''}
+  ${concurrentSheet.branch ? `<div><b>Branch :</b> ${escapeHtml(concurrentSheet.branch)}</div>` : ''}
+  <div><b>Inspection Date :</b> ${escapeHtml(concurrentSheet.inspDate)}</div>
+</div>
+<div><h2 style="font-size:13pt;margin:0 0 4px">DEFECTS &amp; IRREGULARITIES</h2></div>
+${body}
+<div class="doc-footer">This is System Generated AI Report - Verify before use<br/>Generated by COOP·AUDIT·AI — ${escapeHtml(
+      concurrentSheet.inspDate
+    )}</div>
+<script>window.addEventListener('load',function(){setTimeout(function(){window.print();},500);});</script>
+</body></html>`;
+    const w = window.open('', '_blank');
+    if (w) {
+      w.document.write(html);
+      w.document.close();
+    }
   }
 
   async function handleCashBookUpload(file) {
@@ -5156,34 +5757,20 @@ tr.overdue { background: #fff0f0; }
       defectSheet.societyName
     )} — Primary Agricultural Cooperative Credit Society Ltd.</p>
     <p class="doc-title">AUDITOR'S OBSERVATION / DEFECT SHEET</p>
-    <p style="margin:4px 0 0 0; font-size:10pt;">An Initiative of Ministry of Cooperation, Govt. of India &amp; NABARD</p>
-  </div>
-
-  <div class="meta">
-    <div><b>Society :</b> ${escapeHtml(
-      defectSheet.societyName
-    )}</div>
-    <div><b>Audit Date :</b> ${escapeHtml(
-      defectSheet.auditDate
-    )}</div>
-    <div><b>Printed On :</b> ${escapeHtml(today)}</div>
   </div>
 
   <div class="section"><h2>PART A — MERITS (Compliance &amp; Strengths)</h2></div>
   ${meritsHtml}
 
   <div class="section"><h2>PART B — DEMERITS (Defects &amp; Irregularities)</h2></div>
-  <p style="font-size:10.5pt; font-style:italic; margin:4px 0 10px 0; border-left:3px solid #888; padding-left:8px;">
-    During the course of audit, the auditors have identified the following irregularities and defects which, in the professional opinion of the Lead Statutory Auditor, require reporting to the Managing Committee and/or the General Body for necessary resolution. The defects are categorised into Financial, Accounting and Administrative Irregularities in accordance with the Audit Manual of PACS.
-  </p>
   ${
     demeritsByCategory ||
     '<p class="empty">No material defects were noticed during the audit verification.</p>'
   }
 
   <div class="doc-footer">
-    System Generated Report &mdash; Does Not Require Signature<br/>
-    Generated by COOP·AUDIT·AI &mdash; Lead Statutory Auditor (AI-assisted) &mdash; ${escapeHtml(
+    This is System Generated AI Report - Verify before use<br/>
+    Generated by COOP·AUDIT·AI &mdash; ${escapeHtml(
       today
     )}
   </div>
@@ -5295,7 +5882,102 @@ tr.overdue { background: #fff0f0; }
     );
   }
 
+  // ---------------------------------------------------------------------------
+  // Shared state/handlers handed to every menu view via <AuditContext.Provider>.
+  // Each view under src/views/ destructures what it needs from useAudit().
+  // When adding state used by a view, remember to add it here too.
+  // ---------------------------------------------------------------------------
+  const auditCtx = {
+    // ----- core upload / processing state -----
+    loading, setLoading,
+    detectedFiles, setDetectedFiles,
+    auditResults, setAuditResults,
+    societyName, setSocietyName,
+    uploadStatusMessage, setUploadStatusMessage,
+    allFilesUploaded, setAllFilesUploaded,
+    currentProcessingFile, setCurrentProcessingFile,
+    processedCount, setProcessedCount,
+    totalCount, setTotalCount,
+    currentStage, setCurrentStage,
+    activeView, setActiveView,
+    missingFiles, setMissingFiles,
+    fileTableData, setFileTableData,
+    isDragging, setIsDragging,
+    auditNarratives, setAuditNarratives,
+    // ----- report analysis: cash book -----
+    cashBookReport, setCashBookReport,
+    cashBookError, setCashBookError,
+    cashBookProcessing, setCashBookProcessing,
+    cashBalanceThreshold, setCashBalanceThreshold,
+    cashBookAnalysis, setCashBookAnalysis,
+    cashBookIncludeInDefects, setCashBookIncludeInDefects,
+    // ----- report analysis: loan recoveries -----
+    loanRecoveryReports, setLoanRecoveryReports,
+    loanRecoveryError, setLoanRecoveryError,
+    loanRecoveryProcessing, setLoanRecoveryProcessing,
+    loanRecoveryAnalyses, setLoanRecoveryAnalyses,
+    loanRecoveryIncludeMap, setLoanRecoveryIncludeMap,
+    // ----- AI legal chat -----
+    chatMessages, setChatMessages,
+    chatInput, setChatInput,
+    chatTyping, setChatTyping,
+    aiKey, setAiKey,
+    showKeyPanel, setShowKeyPanel,
+    aiKeyDraft, setAiKeyDraft,
+    aiTestRunning, setAiTestRunning,
+    aiTestResult, setAiTestResult,
+    aiTestQuestion, setAiTestQuestion,
+    // ----- defect sheet generator -----
+    customDefects, setCustomDefects,
+    customDefectDraft, setCustomDefectDraft,
+    defectPreview, setDefectPreview,
+    // ----- concurrent audit / periodical inspection -----
+    concurrentFileName,
+    concurrentMeta,
+    concurrentDetected,
+    concurrentCustom, setConcurrentCustom,
+    concurrentProcessing,
+    concurrentError,
+    concurrentDraft, setConcurrentDraft,
+    concurrentPreview, setConcurrentPreview,
+    concurrentSheet,
+    handleConcurrentUpload,
+    printConcurrentSheet,
+    // ----- legal corpus -----
+    corpus, setCorpus,
+    corpusStatus, setCorpusStatus,
+    corpusProgress, setCorpusProgress,
+    // ----- derived (useMemo) -----
+    financials,
+    statementRows,
+    defectSheet,
+    documentRows,
+    availableCount,
+    talliedCount,
+    // ----- handlers -----
+    runAiKeyTest,
+    saveAiKey,
+    clearAiKey,
+    processZIP,
+    handleCashBookUpload,
+    handleAddUserReference,
+    handleRemoveUserReference,
+    answerWithCorpus,
+    handleLoanRecoveryUpload,
+    downloadCashBookCSV,
+    downloadCashBookPDF,
+    downloadLoanRecoveryCSV,
+    downloadLoanRecoveryPDF,
+    printDefectSheet,
+    // ----- module-level helpers used inside views -----
+    hasGeminiKey,
+    buildCaseLawReferences,
+    generateDefectNarrative,
+    generateLegalAgentAnswer,
+  };
+
   return (
+    <AuditContext.Provider value={auditCtx}>
     <div className="min-h-screen bg-gradient-to-br from-slate-950 via-[#031b1a] to-emerald-950 flex overflow-hidden text-white relative font-sans">
       <aside className="w-[320px] min-h-screen bg-slate-950/60 backdrop-blur-2xl text-white flex flex-col border-r border-white/10 relative overflow-hidden">
         <div className="absolute inset-0 cyber-grid opacity-30 pointer-events-none" />
@@ -5304,11 +5986,23 @@ tr.overdue { background: #fff0f0; }
 
         <div className="relative p-8 border-b border-white/10">
           <div className="flex flex-col items-center text-center gap-5">
-            <img
-              src={auditLogo}
-              alt="Audit Management System logo"
-              className="w-28 h-28 object-contain drop-shadow-lg"
-            />
+            <div className="group relative">
+              {/* attraction glow */}
+              <div className="absolute -inset-3 rounded-[2rem] bg-gradient-to-br from-emerald-400/40 via-violet-400/35 to-fuchsia-400/40 blur-2xl opacity-70 group-hover:opacity-100 transition-opacity duration-500 pointer-events-none animate-pulse" />
+              <div className="relative rounded-3xl overflow-hidden ring-1 ring-white/40 shadow-[0_12px_34px_rgba(91,33,182,0.30)] transition-transform duration-500 group-hover:scale-[1.05]">
+                {/* blend the logo's white backing into the page background */}
+                <img
+                  src={auditLogo}
+                  alt="Audit Management System logo"
+                  className="w-28 h-28 object-contain mix-blend-multiply"
+                />
+                {/* glossy sheen */}
+                <div className="absolute inset-0 pointer-events-none bg-gradient-to-br from-white/55 via-white/10 to-transparent" />
+                <div className="absolute inset-x-0 top-0 h-1/2 pointer-events-none bg-gradient-to-b from-white/35 to-transparent" />
+                {/* moving highlight on hover */}
+                <div className="absolute -inset-y-2 -left-1/2 w-1/2 -skew-x-12 bg-white/30 blur-md opacity-0 group-hover:opacity-100 group-hover:translate-x-[300%] transition-all duration-700 pointer-events-none" />
+              </div>
+            </div>
             <div className="text-center w-full">
               <h1 className="font-display text-[clamp(1.25rem,5.5vw,1.75rem)] font-black tracking-[0.08em] whitespace-nowrap leading-none">
                 <span style={{ color: '#10b981' }}>COOP</span>
@@ -5353,6 +6047,7 @@ tr.overdue { background: #fff0f0; }
             ['Audit Defects', ScrollText, 'violet', 'defects'],
             ['AI Legal Chat', MessagesSquare, 'fuchsia', 'aichat'],
             ['Defect Sheet Generator', FilePlus2, 'lime', 'generator'],
+            ['Concurrent Audit / Inspection', ClipboardCheck, 'cyan', 'concurrent'],
           ].map(([label, Icon, accent, view], idx) => {
             const isActive = activeView === view;
             return (
@@ -5388,7 +6083,7 @@ tr.overdue { background: #fff0f0; }
 
         <div className="relative px-5 pb-5">
           <div className="text-[9px] uppercase tracking-[0.35em] text-cyan-200/40 font-mono-techy text-center">
-            v1.0 · Neural Verifier
+            {APP_VERSION} · Neural Verifier
           </div>
         </div>
       </aside>
@@ -5430,33 +6125,6 @@ tr.overdue { background: #fff0f0; }
                 </div>
               </div>
 
-              <div className="flex flex-col items-center gap-3 flex-shrink-0">
-                <div className="relative anim-float">
-                  <div className="absolute inset-0 bg-orange-400/40 blur-2xl rounded-full" />
-                  <div
-                    className="relative rounded-full bg-white/95 p-1 shadow-[0_0_35px_rgba(251,146,60,0.5)] ring-2 ring-orange-400/50"
-                    style={{
-                      width: 'clamp(4.5rem, 6vw, 6rem)',
-                      height: 'clamp(4.5rem, 6vw, 6rem)',
-                    }}
-                  >
-                    <img
-                      src={epacsLogo}
-                      alt="e-PACS — ERP for Agriculture Cooperatives"
-                      className="w-full h-full object-contain rounded-full"
-                    />
-                  </div>
-                </div>
-
-                <div className="max-w-[280px] text-center">
-                  <div className="font-display font-black text-[clamp(11px,1.35vw,15px)] tracking-[0.18em] uppercase gradient-text-fire leading-tight">
-                    ERP for Agriculture
-                  </div>
-                  <div className="font-display font-black text-[clamp(11px,1.35vw,15px)] tracking-[0.18em] uppercase gradient-text-fire leading-tight">
-                    Cooperatives
-                  </div>
-                </div>
-              </div>
             </div>
           </div>
 
@@ -5666,2433 +6334,23 @@ tr.overdue { background: #fff0f0; }
             </div>
           )}
 
-          {/* Two-column layout: Statements TABLE (left) + Audit RESULTS panel (right) */}
-          {activeView === 'dashboard' && !loading && (detectedFiles.length > 0 || auditResults.length > 0) && (
-            <div className="grid grid-cols-1 xl:grid-cols-12 gap-6">
-              {/* LEFT — Statements Table */}
-              <div className="xl:col-span-6 relative overflow-hidden bg-slate-900/50 backdrop-blur-2xl rounded-[28px] border border-white/10 shadow-[0_0_60px_rgba(52,211,153,0.12)] anim-slide-up">
-                <div className="absolute inset-0 cyber-grid opacity-30 pointer-events-none" />
-                <div className="absolute top-0 left-0 right-0 h-px bg-gradient-to-r from-transparent via-emerald-400/80 to-transparent" />
+          {activeView === 'dashboard' && !loading && <DashboardView />}
 
-                <div className="relative px-6 py-5 border-b border-white/10 bg-gradient-to-r from-emerald-500/10 via-cyan-500/10 to-violet-500/10 flex items-center justify-between">
-                  <div>
-                    <div className="flex items-center gap-2 mb-1">
-                      <Sparkles className="w-3 h-3 text-emerald-300" />
-                      <div className="text-[10px] uppercase tracking-[0.4em] text-emerald-300/80 font-mono-techy font-bold">
-                        Detect
-                      </div>
-                    </div>
-                    <h3 className="font-display text-lg lg:text-xl font-black tracking-[0.15em] gradient-text">
-                      FINANCIAL STATEMENTS
-                    </h3>
-                  </div>
-                  <div className="px-3 py-2 rounded-xl bg-emerald-500/10 border border-emerald-400/30">
-                    <div className="text-[9px] uppercase tracking-[0.25em] text-emerald-300/80 font-mono-techy">
-                      Available
-                    </div>
-                    <div className="font-display text-xl font-black text-emerald-300 text-right leading-none">
-                      {availableCount}/{statementRows.length}
-                    </div>
-                  </div>
-                </div>
+          {activeView === 'documents' && !loading && <UploadDocumentsView />}
 
-                <div className="relative overflow-x-auto">
-                  <table className="w-full">
-                    <thead>
-                      <tr className="bg-gradient-to-r from-slate-900/80 via-slate-800/60 to-slate-900/80 border-b border-white/10">
-                        <th className="px-4 py-3 text-left text-[10px] font-bold uppercase tracking-[0.3em] text-cyan-300/80 font-mono-techy w-12">
-                          #
-                        </th>
-                        <th className="px-4 py-3 text-left text-[10px] font-bold uppercase tracking-[0.3em] text-cyan-300/80 font-mono-techy">
-                          Statement
-                        </th>
-                        <th className="px-4 py-3 text-center text-[10px] font-bold uppercase tracking-[0.3em] text-cyan-300/80 font-mono-techy">
-                          Status
-                        </th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {statementRows.map((row, idx) => {
-                        const available = row.status === 'Available';
-                        const Icon = row.icon;
-                        return (
-                          <tr
-                            key={row.key}
-                            className="border-b border-white/5 hover:bg-white/[0.03] transition-colors anim-row"
-                            style={{ animationDelay: `${idx * 0.09}s` }}
-                          >
-                            <td className="px-4 py-4 align-middle text-cyan-300/50 font-mono-techy text-sm">
-                              {String(idx + 1).padStart(2, '0')}
-                            </td>
-                            <td className="px-4 py-4 align-middle">
-                              <div className="flex items-center gap-3">
-                                <div
-                                  className={`w-9 h-9 rounded-xl flex items-center justify-center border ${
-                                    available
-                                      ? 'bg-white/5 border-white/10'
-                                      : 'bg-rose-500/5 border-rose-400/20'
-                                  }`}
-                                >
-                                  <Icon className={`w-4 h-4 ${row.iconColor}`} />
-                                </div>
-                                <div className="font-display font-bold tracking-[0.1em] text-white text-sm">
-                                  {row.label.toUpperCase()}
-                                </div>
-                              </div>
-                            </td>
-                            <td className="px-4 py-4 text-center align-middle">
-                              <span
-                                className={`inline-flex items-center gap-2 px-3 py-1 rounded-full text-[10px] tracking-[0.2em] font-display font-bold border ${
-                                  available
-                                    ? 'bg-emerald-400/15 border-emerald-400/40 text-emerald-300'
-                                    : 'bg-rose-400/10 border-rose-400/30 text-rose-300'
-                                }`}
-                              >
-                                <span
-                                  className={`w-1.5 h-1.5 rounded-full ${
-                                    available ? 'bg-emerald-300' : 'bg-rose-300'
-                                  } animate-pulse`}
-                                />
-                                {row.status.toUpperCase()}
-                              </span>
-                            </td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
+          {activeView === 'reports' && !loading && <ReportAnalysisView />}
 
-              {/* RIGHT — Animated audit result cards */}
-              <div className="xl:col-span-6 space-y-4">
-                <div className="relative overflow-hidden bg-slate-900/50 backdrop-blur-2xl rounded-[28px] border border-white/10 px-6 py-5 shadow-[0_0_60px_rgba(168,85,247,0.12)] anim-slide-up">
-                  <div className="absolute inset-0 cyber-grid opacity-30 pointer-events-none" />
-                  <div className="absolute top-0 left-0 right-0 h-px bg-gradient-to-r from-transparent via-violet-400/80 to-transparent" />
+          {activeView === 'aichat' && !loading && <LegalChatView />}
 
-                  <div className="relative flex items-center justify-between gap-4">
-                    <div className="flex items-center gap-3">
-                      <div className="relative">
-                        <div className="absolute inset-0 bg-violet-400 blur-xl opacity-60 animate-pulse" />
-                        <div className="relative w-11 h-11 rounded-xl bg-gradient-to-br from-violet-400 via-pink-400 to-yellow-400 flex items-center justify-center shadow-[0_0_25px_rgba(168,85,247,0.5)]">
-                          <ShieldCheck className="w-5 h-5 text-slate-950" strokeWidth={2.5} />
-                        </div>
-                      </div>
-                      <div>
-                        <div className="flex items-center gap-2 mb-0.5">
-                          <Activity className="w-3 h-3 text-violet-300 animate-pulse" />
-                          <div className="text-[10px] uppercase tracking-[0.4em] text-violet-300/80 font-mono-techy font-bold">
-                            Verify
-                          </div>
-                        </div>
-                        <h3 className="font-display text-lg lg:text-xl font-black tracking-[0.15em] gradient-text-fire">
-                          AUDIT RESULTS
-                        </h3>
-                      </div>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <div className="px-3 py-2 rounded-xl bg-emerald-500/10 border border-emerald-400/30">
-                        <div className="text-[9px] uppercase tracking-[0.2em] text-emerald-300/80 font-mono-techy">
-                          OK
-                        </div>
-                        <div className="font-display text-lg font-black text-emerald-300 leading-none">
-                          {talliedCount}
-                        </div>
-                      </div>
-                      <div className="px-3 py-2 rounded-xl bg-rose-500/10 border border-rose-400/30">
-                        <div className="text-[9px] uppercase tracking-[0.2em] text-rose-300/80 font-mono-techy">
-                          Def
-                        </div>
-                        <div className="font-display text-lg font-black text-rose-300 leading-none">
-                          {auditResults.length - talliedCount}
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                </div>
+          {activeView === 'generator' && !loading && <DefectSheetGeneratorView />}
 
-                {auditResults.length === 0 && (
-                  <div className="rounded-[28px] border border-white/10 bg-slate-900/40 backdrop-blur-2xl p-10 text-center">
-                    <div className="text-5xl mb-3 anim-float">🔍</div>
-                    <div className="font-display tracking-[0.15em] text-white/80 text-sm">
-                      NO VERIFICATIONS YET
-                    </div>
-                    <div className="text-xs text-cyan-200/50 mt-1 font-mono-techy">
-                      Required PDFs may be missing from the ZIP.
-                    </div>
-                  </div>
-                )}
+          {activeView === 'defects' && !loading && <AuditDefectsView />}
 
-                {auditResults.map((result, index) => (
-                  <div
-                    key={index}
-                    className={`relative overflow-hidden rounded-[24px] border backdrop-blur-2xl p-5 anim-row ${
-                      result.tallied
-                        ? 'bg-slate-900/50 border-emerald-400/30 shadow-[0_0_40px_rgba(52,211,153,0.15)]'
-                        : 'bg-slate-900/50 border-rose-400/30 shadow-[0_0_40px_rgba(244,63,94,0.18)]'
-                    }`}
-                    style={{ animationDelay: `${index * 0.13}s` }}
-                  >
-                    <div
-                      className={`absolute left-0 top-0 bottom-0 w-1 ${
-                        result.tallied
-                          ? 'bg-gradient-to-b from-emerald-400 via-cyan-400 to-violet-400'
-                          : 'bg-gradient-to-b from-rose-400 via-pink-400 to-fuchsia-400'
-                      } shadow-[0_0_20px_currentColor]`}
-                    />
-                    <div className="absolute -top-16 -right-16 w-40 h-40 rounded-full blur-3xl pointer-events-none opacity-40 bg-gradient-to-br from-violet-400 to-emerald-400" />
+          {activeView === 'concurrent' && !loading && <ConcurrentAuditView />}
 
-                    <div className="relative">
-                      <div className="flex items-start justify-between gap-3 mb-4">
-                        <div className="flex-1 min-w-0">
-                          <div className="font-display font-black tracking-[0.15em] text-white text-sm uppercase">
-                            {result.statementType}
-                          </div>
-                          <div className="text-[10px] text-cyan-200/60 break-all mt-1 font-mono-techy">
-                            {result.fileName}
-                          </div>
-                        </div>
-                        {result.tallied ? (
-                          <span className="shrink-0 inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-emerald-500/15 border border-emerald-400/50 text-emerald-300 font-display font-black text-[10px] uppercase tracking-[0.2em] shadow-[0_0_20px_rgba(52,211,153,0.4)]">
-                            <CheckCircle2 className="w-3 h-3" strokeWidth={3} />
-                            Tallied
-                          </span>
-                        ) : (
-                          <span className="shrink-0 inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-rose-500/15 border border-rose-400/50 text-rose-300 font-display font-black text-[10px] uppercase tracking-[0.2em] shadow-[0_0_20px_rgba(244,63,94,0.4)] anim-shake">
-                            <XCircle className="w-3 h-3" strokeWidth={3} />
-                            Mismatch
-                          </span>
-                        )}
-                      </div>
-
-                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                        <div className="rounded-xl bg-gradient-to-br from-emerald-500/10 to-transparent border border-emerald-400/20 p-3">
-                          <div className="text-[9px] uppercase tracking-[0.25em] text-emerald-200/70 font-mono-techy font-bold mb-1.5 line-clamp-2">
-                            {result.label1}
-                          </div>
-                          <div className="font-display font-black text-emerald-300 text-lg break-all leading-tight">
-                            ₹{result.amount1.toLocaleString('en-IN')}
-                          </div>
-                        </div>
-                        <div className="rounded-xl bg-gradient-to-br from-violet-500/10 to-transparent border border-violet-400/20 p-3">
-                          <div className="text-[9px] uppercase tracking-[0.25em] text-violet-200/70 font-mono-techy font-bold mb-1.5 line-clamp-2">
-                            {result.label2}
-                          </div>
-                          <div className="font-display font-black text-yellow-300 text-lg break-all leading-tight">
-                            ₹{result.amount2.toLocaleString('en-IN')}
-                          </div>
-                        </div>
-                      </div>
-
-                      {result.aiRemark && (
-                        <div
-                          className={`mt-3 text-[11px] italic px-3 py-2 rounded-lg border ${
-                            result.tallied
-                              ? 'bg-emerald-400/5 border-emerald-400/20 text-emerald-100/90'
-                              : 'bg-rose-400/5 border-rose-400/20 text-rose-100/90'
-                          }`}
-                        >
-                          <span className="font-mono-techy font-bold">
-                            AI ▸
-                          </span>{' '}
-                          {result.aiRemark}
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {/* === UPLOAD DOCUMENTS VIEW — file listing with financial-data verification === */}
-          {activeView === 'documents' && !loading && (
-            <div className="relative overflow-hidden bg-slate-900/50 backdrop-blur-2xl rounded-[28px] border border-white/10 shadow-[0_0_60px_rgba(34,211,238,0.12)] anim-slide-up">
-              <div className="absolute inset-0 cyber-grid opacity-30 pointer-events-none" />
-              <div className="absolute top-0 left-0 right-0 h-px bg-gradient-to-r from-transparent via-cyan-400/80 to-transparent" />
-
-              <div className="relative px-6 py-5 border-b border-white/10 bg-gradient-to-r from-cyan-500/10 via-violet-500/10 to-pink-500/10 flex items-center justify-between gap-4">
-                <div>
-                  <div className="flex items-center gap-2 mb-1">
-                    <Upload className="w-3 h-3 text-cyan-300" />
-                    <div className="text-[10px] uppercase tracking-[0.4em] text-cyan-300/80 font-mono-techy font-bold">
-                      ZIP Inventory
-                    </div>
-                  </div>
-                  <h3 className="font-display text-lg lg:text-xl font-black tracking-[0.15em] gradient-text">
-                    UPLOAD DOCUMENTS
-                  </h3>
-                </div>
-                <div className="flex items-center gap-2">
-                  <div className="px-3 py-2 rounded-xl bg-cyan-500/10 border border-cyan-400/30">
-                    <div className="text-[9px] uppercase tracking-[0.2em] text-cyan-300/80 font-mono-techy">
-                      Files
-                    </div>
-                    <div className="font-display text-lg font-black text-cyan-300 leading-none text-right">
-                      {documentRows.length}
-                    </div>
-                  </div>
-                  <div className="px-3 py-2 rounded-xl bg-emerald-500/10 border border-emerald-400/30">
-                    <div className="text-[9px] uppercase tracking-[0.2em] text-emerald-300/80 font-mono-techy">
-                      With Data
-                    </div>
-                    <div className="font-display text-lg font-black text-emerald-300 leading-none text-right">
-                      {
-                        documentRows.filter(
-                          (r) =>
-                            r.financialDataStatus === 'Available' ||
-                            r.financialDataStatus === 'Verified'
-                        ).length
-                      }
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              {documentRows.length === 0 ? (
-                <div className="relative p-12 text-center">
-                  <div className="text-5xl mb-3 anim-float">📂</div>
-                  <div className="font-display tracking-[0.15em] text-white/80 text-sm">
-                    NO DOCUMENTS LOADED
-                  </div>
-                  <div className="text-xs text-cyan-200/50 mt-1 font-mono-techy">
-                    Upload a ZIP file from the Dashboard to populate this list.
-                  </div>
-                </div>
-              ) : (
-                <div className="relative overflow-x-auto">
-                  <table className="w-full">
-                    <thead>
-                      <tr className="bg-gradient-to-r from-slate-900/80 via-slate-800/60 to-slate-900/80 border-b border-white/10">
-                        <th className="px-4 py-3 text-left text-[10px] font-bold uppercase tracking-[0.3em] text-cyan-300/80 font-mono-techy w-12">
-                          #
-                        </th>
-                        <th className="px-4 py-3 text-left text-[10px] font-bold uppercase tracking-[0.3em] text-cyan-300/80 font-mono-techy">
-                          File Name
-                        </th>
-                        <th className="px-4 py-3 text-left text-[10px] font-bold uppercase tracking-[0.3em] text-cyan-300/80 font-mono-techy">
-                          Document Type
-                        </th>
-                        <th className="px-4 py-3 text-center text-[10px] font-bold uppercase tracking-[0.3em] text-cyan-300/80 font-mono-techy">
-                          Financial Table Data
-                        </th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {documentRows.map((row, idx) => {
-                        const pillClass =
-                          row.financialDataStatus === 'Verified'
-                            ? 'bg-emerald-400/15 border-emerald-400/40 text-emerald-300'
-                            : row.financialDataStatus === 'Available'
-                            ? 'bg-cyan-400/15 border-cyan-400/40 text-cyan-300'
-                            : 'bg-white/5 border-white/15 text-white/50';
-                        const dotClass =
-                          row.financialDataStatus === 'Verified'
-                            ? 'bg-emerald-300'
-                            : row.financialDataStatus === 'Available'
-                            ? 'bg-cyan-300'
-                            : 'bg-white/40';
-                        return (
-                          <tr
-                            key={row.fileName}
-                            className="border-b border-white/5 hover:bg-white/[0.03] transition-colors anim-row"
-                            style={{ animationDelay: `${idx * 0.05}s` }}
-                          >
-                            <td className="px-4 py-3 align-middle text-cyan-300/50 font-mono-techy text-sm">
-                              {Number.isFinite(row.serial)
-                                ? String(row.serial).padStart(2, '0')
-                                : '—'}
-                            </td>
-                            <td className="px-4 py-3 align-middle">
-                              <div className="font-mono-techy text-[12px] text-white/90 break-all">
-                                {row.fileName}
-                              </div>
-                            </td>
-                            <td className="px-4 py-3 align-middle">
-                              <span
-                                className={`font-display tracking-[0.08em] text-[11px] ${
-                                  row.type === 'Other / Unclassified'
-                                    ? 'text-white/50 italic'
-                                    : 'text-white/90'
-                                }`}
-                              >
-                                {row.type}
-                              </span>
-                            </td>
-                            <td className="px-4 py-3 text-center align-middle">
-                              <span
-                                className={`inline-flex items-center gap-2 px-3 py-1 rounded-full text-[10px] tracking-[0.2em] font-display font-bold border ${pillClass}`}
-                              >
-                                <span
-                                  className={`w-1.5 h-1.5 rounded-full ${dotClass} ${
-                                    row.financialDataStatus !== 'N/A'
-                                      ? 'animate-pulse'
-                                      : ''
-                                  }`}
-                                />
-                                {row.financialDataStatus.toUpperCase()}
-                              </span>
-                            </td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-            </div>
-          )}
-
-          {/* === REPORT ANALYSIS VIEW — Cash Book & Loan Recoveries === */}
-          {activeView === 'reports' && !loading && (
-            <div className="space-y-6 anim-slide-up">
-              {/* Header */}
-              <div className="relative overflow-hidden rounded-[28px] border border-white/15 bg-slate-950/50 backdrop-blur-2xl px-6 py-5 shadow-[0_0_60px_rgba(251,191,36,0.15)]">
-                <div className="absolute inset-0 cyber-grid opacity-30 pointer-events-none" />
-                <div className="absolute top-0 left-0 right-0 h-px bg-gradient-to-r from-transparent via-amber-400/60 to-transparent" />
-                <div className="relative flex items-center gap-4">
-                  <div className="relative">
-                    <div className="absolute inset-0 bg-amber-400 blur-2xl opacity-50 animate-pulse" />
-                    <div className="relative w-12 h-12 rounded-2xl bg-gradient-to-br from-amber-400 via-yellow-400 to-orange-400 flex items-center justify-center shadow-[0_0_25px_rgba(251,191,36,0.5)]">
-                      <FileCheck2
-                        className="w-6 h-6 text-slate-950"
-                        strokeWidth={2.5}
-                      />
-                    </div>
-                  </div>
-                  <div>
-                    <div className="flex items-center gap-2 mb-1">
-                      <Sparkles className="w-3 h-3 text-amber-300" />
-                      <div className="text-[10px] uppercase tracking-[0.4em] text-amber-300/80 font-mono-techy font-bold">
-                        Supplementary Reports
-                      </div>
-                    </div>
-                    <h3 className="font-display text-xl lg:text-2xl font-black tracking-[0.15em] gradient-text-fire">
-                      REPORT ANALYSIS
-                    </h3>
-                  </div>
-                </div>
-              </div>
-
-              {/* SECTION 1 — Cash Book Report (single file) */}
-              <div className="relative overflow-hidden rounded-[28px] border border-white/15 bg-slate-950/55 backdrop-blur-2xl p-6 shadow-[0_0_60px_rgba(52,211,153,0.12)]">
-                <div className="absolute inset-0 cyber-grid opacity-25 pointer-events-none" />
-                <div className="absolute top-0 left-0 right-0 h-px bg-gradient-to-r from-transparent via-emerald-400/60 to-transparent" />
-
-                <div className="relative">
-                  <div className="flex items-center gap-3 mb-1">
-                    <div className="w-1.5 h-6 rounded-full bg-gradient-to-b from-emerald-400 to-cyan-400 shadow-[0_0_10px_rgba(52,211,153,0.6)]" />
-                    <div className="text-[10px] uppercase tracking-[0.4em] text-emerald-300/80 font-mono-techy font-bold">
-                      Section 1
-                    </div>
-                  </div>
-                  <h4 className="font-display text-lg lg:text-xl font-black tracking-[0.12em] gradient-text mb-3">
-                    UPLOAD CASH BOOK REPORT
-                  </h4>
-                  <p className="text-xs text-cyan-200/60 mb-4 font-mono-techy uppercase tracking-[0.12em]">
-                    Single PDF file only · Must contain tabular
-                    financial data
-                  </p>
-
-                  {/* Byelaw threshold input */}
-                  <div className="mb-5 p-4 rounded-2xl border border-emerald-400/30 bg-emerald-500/5">
-                    <label className="block">
-                      <div className="text-[10px] uppercase tracking-[0.3em] text-emerald-300/80 font-mono-techy font-bold mb-2">
-                        Enter Cash Balance Retention Permittable Per Day
-                        (As per Byelaw)
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <span className="text-2xl font-display text-emerald-300 font-black">
-                          ₹
-                        </span>
-                        <input
-                          type="number"
-                          min="0"
-                          step="1"
-                          value={cashBalanceThreshold}
-                          onChange={(e) =>
-                            setCashBalanceThreshold(e.target.value)
-                          }
-                          className="flex-1 bg-slate-950/70 border border-white/15 rounded-xl px-4 py-2.5 font-display text-lg font-bold text-white tracking-wide focus:outline-none focus:border-emerald-400/60 focus:ring-2 focus:ring-emerald-400/20"
-                          placeholder="500"
-                        />
-                        <span className="text-[10px] uppercase tracking-[0.2em] text-emerald-200/60 font-mono-techy">
-                          per day
-                        </span>
-                      </div>
-                      <div className="text-[10px] text-cyan-200/50 mt-2 italic">
-                        This is the maximum daily cash retention
-                        allowed by the Society's bye-laws. Closing
-                        balances exceeding this limit will attract a
-                        12% per-day interest penalty.
-                      </div>
-                    </label>
-                  </div>
-
-                  <label
-                    className={`block cursor-pointer relative overflow-hidden rounded-[20px] border-2 border-dashed backdrop-blur-2xl px-8 py-10 text-center transition-all duration-300 ${
-                      cashBookReport && cashBookReport.ok
-                        ? 'border-emerald-400/60 bg-emerald-500/10'
-                        : cashBookError
-                        ? 'border-rose-400/60 bg-rose-500/10'
-                        : 'border-white/20 bg-slate-900/40 hover:border-emerald-400/40 hover:bg-slate-900/55'
-                    }`}
-                  >
-                    <input
-                      type="file"
-                      accept=".pdf,application/pdf"
-                      className="hidden"
-                      disabled={cashBookProcessing}
-                      onChange={(e) => {
-                        const file = e.target.files?.[0];
-                        if (file) handleCashBookUpload(file);
-                        e.target.value = '';
-                      }}
-                    />
-                    <div className="relative">
-                      {cashBookProcessing ? (
-                        <>
-                          <div className="text-5xl mb-3 anim-float">⏳</div>
-                          <div className="font-display tracking-[0.18em] text-white text-base">
-                            VALIDATING…
-                          </div>
-                          <div className="text-[11px] text-cyan-200/60 mt-1 font-mono-techy uppercase tracking-[0.15em]">
-                            Extracting PDF content
-                          </div>
-                        </>
-                      ) : cashBookReport && cashBookReport.ok ? (
-                        <>
-                          <div className="text-5xl mb-3">✅</div>
-                          <div className="font-display tracking-[0.18em] gradient-text text-base mb-1">
-                            UPLOAD SUCCESSFUL
-                          </div>
-                          <div className="text-[12px] text-emerald-200 font-mono-techy break-all">
-                            {cashBookReport.fileName}
-                          </div>
-                          <div className="text-[10px] text-emerald-200/70 mt-1 font-mono-techy uppercase tracking-[0.15em]">
-                            {cashBookReport.pages} page
-                            {cashBookReport.pages === 1 ? '' : 's'}{' '}
-                            · {cashBookReport.distinctAmounts}{' '}
-                            distinct financial values · {cashBookReport.sizeKB} KB
-                          </div>
-                          <div className="text-[10px] text-cyan-200/50 mt-3 italic">
-                            Click to replace with another file
-                          </div>
-                        </>
-                      ) : cashBookReport && !cashBookReport.ok ? (
-                        <>
-                          <div className="text-5xl mb-3 anim-blink">❌</div>
-                          <div className="font-display tracking-[0.18em] gradient-text-fire text-base mb-1">
-                            INVALID FILE
-                          </div>
-                          <div className="text-[12px] text-rose-200 font-mono-techy break-all">
-                            {cashBookReport.fileName}
-                          </div>
-                          <div className="text-[10px] text-rose-300/80 mt-1 font-mono-techy uppercase tracking-[0.15em]">
-                            Reason: {cashBookReport.reason}
-                          </div>
-                          <div className="text-[10px] text-cyan-200/60 mt-3 italic">
-                            Click to upload again
-                          </div>
-                        </>
-                      ) : (
-                        <>
-                          <div className="text-6xl mb-3 anim-float">📄</div>
-                          <div className="font-display tracking-[0.2em] gradient-text text-base mb-2">
-                            CLICK TO UPLOAD CASH BOOK
-                          </div>
-                          <div className="text-[11px] text-cyan-200/60 font-mono-techy uppercase tracking-[0.15em]">
-                            PDF · Single file only
-                          </div>
-                        </>
-                      )}
-                    </div>
-                  </label>
-
-                  {cashBookError && (
-                    <div className="mt-4 rounded-xl border border-rose-400/50 bg-rose-500/10 px-4 py-3 flex items-center gap-3 anim-blink">
-                      <XCircle
-                        className="w-5 h-5 text-rose-300 shrink-0"
-                        strokeWidth={2.5}
-                      />
-                      <div className="font-display tracking-[0.08em] text-rose-200 text-sm">
-                        {cashBookError}
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Cash Book Analysis Table */}
-                  {cashBookAnalysis && cashBookAnalysis.rows.length > 0 && (
-                    <div className="mt-6 space-y-4">
-                      <div className="flex items-center justify-between gap-3 flex-wrap">
-                        <div className="flex items-center gap-2">
-                          <Sparkles className="w-3 h-3 text-emerald-300" />
-                          <div className="font-display tracking-[0.18em] text-sm text-white font-black">
-                            INTEREST PENALTY ANALYSIS · 12% p.a.
-                          </div>
-                        </div>
-                        <div className="flex items-center gap-2">
-                          <div className="px-3 py-2 rounded-xl bg-slate-900/60 border border-white/15">
-                            <div className="text-[9px] uppercase tracking-[0.25em] text-cyan-200/60 font-mono-techy">
-                              Total Days
-                            </div>
-                            <div className="font-display text-base font-black text-cyan-300 leading-none text-right">
-                              {cashBookAnalysis.totalDays}
-                            </div>
-                          </div>
-                          <div className="px-3 py-2 rounded-xl bg-rose-500/10 border border-rose-400/30">
-                            <div className="text-[9px] uppercase tracking-[0.25em] text-rose-300/80 font-mono-techy">
-                              Non-Compliant
-                            </div>
-                            <div className="font-display text-base font-black text-rose-300 leading-none text-right">
-                              {cashBookAnalysis.nonCompliantDays}
-                            </div>
-                          </div>
-                          <div className="px-3 py-2 rounded-xl bg-amber-500/10 border border-amber-400/30">
-                            <div className="text-[9px] uppercase tracking-[0.25em] text-amber-300/80 font-mono-techy">
-                              Total Interest
-                            </div>
-                            <div className="font-display text-base font-black text-amber-300 leading-none text-right">
-                              ₹{cashBookAnalysis.totalInterest.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-
-                      <div className="overflow-x-auto rounded-2xl border border-white/10 bg-slate-900/40 max-h-[500px] overflow-y-auto">
-                        <table className="w-full">
-                          <thead className="sticky top-0 bg-slate-950 z-10">
-                            <tr className="border-b border-white/15">
-                              <th className="px-3 py-2.5 text-left text-[10px] font-bold uppercase tracking-[0.2em] text-emerald-300/80 font-mono-techy">Sl.No.</th>
-                              <th className="px-3 py-2.5 text-left text-[10px] font-bold uppercase tracking-[0.2em] text-emerald-300/80 font-mono-techy">Date</th>
-                              <th className="px-3 py-2.5 text-right text-[10px] font-bold uppercase tracking-[0.2em] text-emerald-300/80 font-mono-techy">Closing Balance (₹)</th>
-                              <th className="px-3 py-2.5 text-right text-[10px] font-bold uppercase tracking-[0.2em] text-emerald-300/80 font-mono-techy">Excess (₹)</th>
-                              <th className="px-3 py-2.5 text-center text-[10px] font-bold uppercase tracking-[0.2em] text-emerald-300/80 font-mono-techy">Status</th>
-                              <th className="px-3 py-2.5 text-right text-[10px] font-bold uppercase tracking-[0.2em] text-emerald-300/80 font-mono-techy">Interest @ 12% (₹)</th>
-                            </tr>
-                          </thead>
-                          <tbody className="font-mono-techy text-[11px]">
-                            {cashBookAnalysis.rows.map((r) => (
-                              <tr
-                                key={r.slNo}
-                                className={`border-b border-white/5 ${
-                                  r.status === 'Non-Compliant'
-                                    ? 'bg-rose-500/5'
-                                    : ''
-                                }`}
-                              >
-                                <td className="px-3 py-1.5 text-cyan-200/60">{r.slNo}</td>
-                                <td className="px-3 py-1.5 text-white/90">{r.date}</td>
-                                <td className="px-3 py-1.5 text-right text-white">
-                                  {r.closingBalance.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                                </td>
-                                <td className="px-3 py-1.5 text-right text-amber-300">
-                                  {r.excess > 0 ? r.excess.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '—'}
-                                </td>
-                                <td className="px-3 py-1.5 text-center">
-                                  <span
-                                    className={`inline-block px-2 py-0.5 rounded-full text-[9px] tracking-[0.2em] font-display font-bold border ${
-                                      r.status === 'Compliant'
-                                        ? 'bg-emerald-400/15 border-emerald-400/40 text-emerald-300'
-                                        : 'bg-rose-400/15 border-rose-400/40 text-rose-300'
-                                    }`}
-                                  >
-                                    {r.status === 'Compliant' ? 'OK' : 'BREACH'}
-                                  </span>
-                                </td>
-                                <td className="px-3 py-1.5 text-right text-rose-200">
-                                  {r.interest > 0 ? r.interest.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '0.00'}
-                                </td>
-                              </tr>
-                            ))}
-                            <tr className="bg-amber-500/10 border-t-2 border-amber-400/40 sticky bottom-0">
-                              <td colSpan={5} className="px-3 py-2 text-right font-display font-black tracking-[0.15em] uppercase text-amber-200 text-xs">
-                                Grand Total · Interest @ 12%
-                              </td>
-                              <td className="px-3 py-2 text-right font-display font-black text-amber-300 text-base">
-                                ₹{cashBookAnalysis.totalInterest.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                              </td>
-                            </tr>
-                          </tbody>
-                        </table>
-                      </div>
-
-                      {cashBookAnalysis.nonCompliantDays > 0 && (
-                        <div className="rounded-xl border border-amber-400/30 bg-amber-500/5 px-4 py-3 text-[12px] text-amber-100/90 italic">
-                          <b className="not-italic">Summary:</b> Out of {cashBookAnalysis.totalDays} day(s) audited, {cashBookAnalysis.nonCompliantDays} day(s) breached the bye-law cash retention limit of ₹{cashBookAnalysis.threshold.toLocaleString('en-IN')}. The aggregate notional interest penalty at 12% per annum on the excess balances aggregates to <b className="not-italic text-amber-300">₹{cashBookAnalysis.totalInterest.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</b>. Peak closing balance: ₹{cashBookAnalysis.highestCB.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} on {cashBookAnalysis.highestDate}.
-                        </div>
-                      )}
-
-                      {/* Download Excel / PDF */}
-                      <div className="flex flex-wrap items-center gap-2">
-                        <div className="text-[10px] uppercase tracking-[0.3em] text-cyan-200/70 font-mono-techy font-bold mr-2">
-                          Download Report :
-                        </div>
-                        <button
-                          type="button"
-                          onClick={downloadCashBookCSV}
-                          className="group relative flex items-center gap-2 px-4 py-2 rounded-xl border border-emerald-400/40 bg-gradient-to-r from-emerald-500/15 to-cyan-500/15 hover:from-emerald-500/25 hover:to-cyan-500/25 transition-all duration-300"
-                        >
-                          <span className="text-base">📊</span>
-                          <span className="font-display tracking-[0.15em] uppercase text-[10px] font-black text-emerald-200">
-                            Excel (CSV)
-                          </span>
-                        </button>
-                        <button
-                          type="button"
-                          onClick={downloadCashBookPDF}
-                          className="group relative flex items-center gap-2 px-4 py-2 rounded-xl border border-rose-400/40 bg-gradient-to-r from-rose-500/15 to-pink-500/15 hover:from-rose-500/25 hover:to-pink-500/25 transition-all duration-300"
-                        >
-                          <span className="text-base">📄</span>
-                          <span className="font-display tracking-[0.15em] uppercase text-[10px] font-black text-rose-200">
-                            PDF
-                          </span>
-                        </button>
-                      </div>
-
-                      {/* Opt-in toggle for Defect Sheet inclusion */}
-                      <div className="rounded-2xl border border-emerald-400/30 bg-gradient-to-r from-emerald-500/5 via-cyan-500/5 to-emerald-500/5 p-4 flex items-center justify-between gap-3 flex-wrap">
-                        <div className="flex items-center gap-3 flex-1 min-w-[250px]">
-                          <div
-                            className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 ${
-                              cashBookIncludeInDefects
-                                ? 'bg-emerald-500/20 border border-emerald-400/50'
-                                : 'bg-slate-900/60 border border-white/15'
-                            }`}
-                          >
-                            {cashBookIncludeInDefects ? (
-                              <CheckCircle2
-                                className="w-5 h-5 text-emerald-300"
-                                strokeWidth={2.5}
-                              />
-                            ) : (
-                              <ScrollText
-                                className="w-5 h-5 text-cyan-300"
-                                strokeWidth={2}
-                              />
-                            )}
-                          </div>
-                          <div>
-                            <div className="font-display text-sm font-black text-white tracking-[0.08em]">
-                              {cashBookIncludeInDefects
-                                ? 'Included in Defect Sheet'
-                                : 'Add this Cash Book finding to Auditor Defect Sheet?'}
-                            </div>
-                            <div className="text-[10px] text-cyan-200/60 font-mono-techy uppercase tracking-[0.15em] mt-0.5">
-                              {cashBookIncludeInDefects
-                                ? 'This finding will appear under B.1 · Financial Irregularities'
-                                : 'Confirm to include this analysis in the official defect sheet'}
-                            </div>
-                          </div>
-                        </div>
-                        <button
-                          type="button"
-                          onClick={() =>
-                            setCashBookIncludeInDefects(
-                              (v) => !v
-                            )
-                          }
-                          className={`shrink-0 px-5 py-2.5 rounded-xl font-display tracking-[0.15em] uppercase text-[11px] font-black border transition-all duration-300 ${
-                            cashBookIncludeInDefects
-                              ? 'border-rose-400/50 bg-rose-500/10 text-rose-200 hover:bg-rose-500/20'
-                              : 'border-emerald-400/50 bg-gradient-to-r from-emerald-500/20 via-cyan-500/20 to-emerald-500/20 text-emerald-200 hover:from-emerald-500/30 hover:via-cyan-500/30 hover:to-emerald-500/30 shadow-[0_0_25px_rgba(52,211,153,0.2)]'
-                          }`}
-                        >
-                          {cashBookIncludeInDefects
-                            ? '✕ Remove'
-                            : '+ Add to Defects'}
-                        </button>
-                      </div>
-                    </div>
-                  )}
-                </div>
-              </div>
-
-              {/* SECTION 2 — Loan Recoveries Reports (up to 12) */}
-              <div className="relative overflow-hidden rounded-[28px] border border-white/15 bg-slate-950/55 backdrop-blur-2xl p-6 shadow-[0_0_60px_rgba(168,85,247,0.12)]">
-                <div className="absolute inset-0 cyber-grid opacity-25 pointer-events-none" />
-                <div className="absolute top-0 left-0 right-0 h-px bg-gradient-to-r from-transparent via-violet-400/60 to-transparent" />
-
-                <div className="relative">
-                  <div className="flex items-center gap-3 mb-1">
-                    <div className="w-1.5 h-6 rounded-full bg-gradient-to-b from-violet-400 to-fuchsia-400 shadow-[0_0_10px_rgba(168,85,247,0.6)]" />
-                    <div className="text-[10px] uppercase tracking-[0.4em] text-violet-300/80 font-mono-techy font-bold">
-                      Section 2
-                    </div>
-                  </div>
-                  <h4 className="font-display text-lg lg:text-xl font-black tracking-[0.12em] gradient-text-fire mb-3">
-                    UPLOAD LOAN RECOVERIES REPORT
-                  </h4>
-                  <p className="text-xs text-violet-200/60 mb-4 font-mono-techy uppercase tracking-[0.12em]">
-                    Maximum 12 PDF files at a time · Each must
-                    contain tabular financial data
-                  </p>
-
-                  <label
-                    className={`block cursor-pointer relative overflow-hidden rounded-[20px] border-2 border-dashed backdrop-blur-2xl px-8 py-10 text-center transition-all duration-300 ${
-                      loanRecoveryReports.length > 0 &&
-                      loanRecoveryReports.every((r) => r.ok)
-                        ? 'border-emerald-400/60 bg-emerald-500/10'
-                        : loanRecoveryError
-                        ? 'border-rose-400/60 bg-rose-500/10'
-                        : 'border-white/20 bg-slate-900/40 hover:border-violet-400/40 hover:bg-slate-900/55'
-                    }`}
-                  >
-                    <input
-                      type="file"
-                      accept=".pdf,application/pdf"
-                      multiple
-                      className="hidden"
-                      disabled={loanRecoveryProcessing}
-                      onChange={(e) => {
-                        const files = e.target.files;
-                        if (files && files.length > 0) {
-                          handleLoanRecoveryUpload(files);
-                        }
-                        e.target.value = '';
-                      }}
-                    />
-                    <div className="relative">
-                      {loanRecoveryProcessing ? (
-                        <>
-                          <div className="text-5xl mb-3 anim-float">⏳</div>
-                          <div className="font-display tracking-[0.18em] text-white text-base">
-                            VALIDATING FILES…
-                          </div>
-                          <div className="text-[11px] text-violet-200/60 mt-1 font-mono-techy uppercase tracking-[0.15em]">
-                            Extracting PDF contents
-                          </div>
-                        </>
-                      ) : loanRecoveryReports.length > 0 ? (
-                        <>
-                          <div className="text-5xl mb-3">
-                            {loanRecoveryReports.every((r) => r.ok)
-                              ? '✅'
-                              : '⚠️'}
-                          </div>
-                          <div className="font-display tracking-[0.18em] gradient-text-fire text-base mb-1">
-                            {loanRecoveryReports.length} FILE
-                            {loanRecoveryReports.length === 1 ? '' : 'S'}{' '}
-                            PROCESSED
-                          </div>
-                          <div className="text-[11px] text-violet-200/70 mt-1 font-mono-techy uppercase tracking-[0.15em]">
-                            {
-                              loanRecoveryReports.filter((r) => r.ok)
-                                .length
-                            }{' '}
-                            valid ·{' '}
-                            {
-                              loanRecoveryReports.filter(
-                                (r) => !r.ok
-                              ).length
-                            }{' '}
-                            invalid
-                          </div>
-                          <div className="text-[10px] text-cyan-200/50 mt-3 italic">
-                            Click to upload another batch
-                          </div>
-                        </>
-                      ) : (
-                        <>
-                          <div className="text-6xl mb-3 anim-float">📁</div>
-                          <div className="font-display tracking-[0.2em] gradient-text-fire text-base mb-2">
-                            CLICK TO UPLOAD LOAN REPORTS
-                          </div>
-                          <div className="text-[11px] text-violet-200/60 font-mono-techy uppercase tracking-[0.15em]">
-                            PDF · Up to 12 files
-                          </div>
-                        </>
-                      )}
-                    </div>
-                  </label>
-
-                  {loanRecoveryError && (
-                    <div className="mt-4 rounded-xl border border-rose-400/50 bg-rose-500/10 px-4 py-3 flex items-center gap-3 anim-blink">
-                      <XCircle
-                        className="w-5 h-5 text-rose-300 shrink-0"
-                        strokeWidth={2.5}
-                      />
-                      <div className="font-display tracking-[0.08em] text-rose-200 text-sm">
-                        {loanRecoveryError}
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Per-file status table */}
-                  {loanRecoveryReports.length > 0 && (
-                    <div className="mt-5 overflow-x-auto rounded-2xl border border-white/10 bg-slate-900/40">
-                      <table className="w-full">
-                        <thead>
-                          <tr className="border-b border-white/10 bg-gradient-to-r from-slate-900/80 to-slate-800/40">
-                            <th className="px-4 py-2.5 text-left text-[10px] font-bold uppercase tracking-[0.3em] text-violet-300/80 font-mono-techy w-12">
-                              #
-                            </th>
-                            <th className="px-4 py-2.5 text-left text-[10px] font-bold uppercase tracking-[0.3em] text-violet-300/80 font-mono-techy">
-                              File Name
-                            </th>
-                            <th className="px-4 py-2.5 text-center text-[10px] font-bold uppercase tracking-[0.3em] text-violet-300/80 font-mono-techy">
-                              Pages
-                            </th>
-                            <th className="px-4 py-2.5 text-center text-[10px] font-bold uppercase tracking-[0.3em] text-violet-300/80 font-mono-techy">
-                              Status
-                            </th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {loanRecoveryReports.map((r, idx) => (
-                            <tr
-                              key={`${r.fileName}-${idx}`}
-                              className="border-b border-white/5 hover:bg-white/[0.03] transition-colors"
-                            >
-                              <td className="px-4 py-2.5 align-middle text-violet-300/50 font-mono-techy text-sm">
-                                {String(idx + 1).padStart(2, '0')}
-                              </td>
-                              <td className="px-4 py-2.5 align-middle">
-                                <div className="font-mono-techy text-[12px] text-white/90 break-all">
-                                  {r.fileName}
-                                </div>
-                                {!r.ok && (
-                                  <div className="text-[10px] text-rose-300/80 mt-0.5 font-mono-techy">
-                                    {r.reason}
-                                  </div>
-                                )}
-                              </td>
-                              <td className="px-4 py-2.5 text-center align-middle text-cyan-200/70 text-sm font-mono-techy">
-                                {r.pages || '—'}
-                              </td>
-                              <td className="px-4 py-2.5 text-center align-middle">
-                                {r.ok ? (
-                                  <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] tracking-[0.2em] font-display font-bold border bg-emerald-400/15 border-emerald-400/40 text-emerald-300">
-                                    <CheckCircle2
-                                      className="w-3 h-3"
-                                      strokeWidth={3}
-                                    />
-                                    VALID
-                                  </span>
-                                ) : (
-                                  <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] tracking-[0.2em] font-display font-bold border bg-rose-400/15 border-rose-400/40 text-rose-300 anim-blink">
-                                    <XCircle
-                                      className="w-3 h-3"
-                                      strokeWidth={3}
-                                    />
-                                    INVALID
-                                  </span>
-                                )}
-                              </td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  )}
-
-                  {/* Per-file Loan Recovery Analysis Tables */}
-                  {loanRecoveryAnalyses.length > 0 && (
-                    <div className="mt-6 space-y-5">
-                      <div className="flex items-center gap-2">
-                        <Sparkles className="w-3 h-3 text-violet-300" />
-                        <div className="font-display tracking-[0.18em] text-sm text-white font-black">
-                          INTEREST RECONCILIATION · PER-FILE ANALYSIS
-                        </div>
-                      </div>
-
-                      {loanRecoveryAnalyses.map((analysis, fileIdx) => (
-                        <div
-                          key={`${analysis.fileName}-${fileIdx}`}
-                          className="rounded-2xl border border-violet-400/25 bg-slate-900/50 backdrop-blur-md p-4"
-                        >
-                          <div className="flex items-center justify-between gap-3 flex-wrap mb-3">
-                            <div>
-                              <div className="text-[9px] uppercase tracking-[0.3em] text-violet-300/70 font-mono-techy">
-                                File {fileIdx + 1}
-                              </div>
-                              <div className="font-display text-sm font-bold text-white break-all">
-                                {analysis.fileName}
-                              </div>
-                            </div>
-                            <div className="flex items-center gap-2 flex-wrap">
-                              <div className="px-2.5 py-1.5 rounded-lg bg-slate-900/60 border border-white/15">
-                                <div className="text-[9px] uppercase tracking-[0.2em] text-cyan-200/60 font-mono-techy">Records</div>
-                                <div className="font-display text-sm font-black text-cyan-300 leading-none text-right">{analysis.records.length}</div>
-                              </div>
-                              <div className="px-2.5 py-1.5 rounded-lg bg-slate-900/60 border border-white/15">
-                                <div className="text-[9px] uppercase tracking-[0.2em] text-violet-200/60 font-mono-techy">ROI</div>
-                                <div className="font-display text-sm font-black text-violet-300 leading-none text-right">{analysis.detectedROI}%</div>
-                              </div>
-                            </div>
-                          </div>
-
-                          {analysis.records.length === 0 ? (
-                            <div className="rounded-lg border border-amber-400/30 bg-amber-500/5 px-3 py-2 text-[11px] text-amber-100/90 italic">
-                              {analysis.extractedNote}
-                            </div>
-                          ) : (
-                            <>
-                              <div className="overflow-x-auto rounded-xl border border-white/10 bg-slate-950/40">
-                                <table className="w-full">
-                                  <thead>
-                                    <tr className="border-b border-white/15 bg-slate-900/80">
-                                      <th className="px-2 py-2 text-left text-[9px] font-bold uppercase tracking-[0.2em] text-violet-300/80 font-mono-techy">Sl</th>
-                                      <th className="px-2 py-2 text-left text-[9px] font-bold uppercase tracking-[0.2em] text-violet-300/80 font-mono-techy">GL No</th>
-                                      <th className="px-2 py-2 text-left text-[9px] font-bold uppercase tracking-[0.2em] text-violet-300/80 font-mono-techy">Loan No</th>
-                                      <th className="px-2 py-2 text-left text-[9px] font-bold uppercase tracking-[0.2em] text-violet-300/80 font-mono-techy">Member Name</th>
-                                      <th className="px-2 py-2 text-right text-[9px] font-bold uppercase tracking-[0.2em] text-violet-300/80 font-mono-techy">Sanctioned (₹)</th>
-                                      <th className="px-2 py-2 text-right text-[9px] font-bold uppercase tracking-[0.2em] text-violet-300/80 font-mono-techy">Principal Coll. (₹)</th>
-                                      <th className="px-2 py-2 text-center text-[9px] font-bold uppercase tracking-[0.2em] text-violet-300/80 font-mono-techy">Days†</th>
-                                      <th className="px-2 py-2 text-center text-[9px] font-bold uppercase tracking-[0.2em] text-violet-300/80 font-mono-techy">ROI %</th>
-                                      <th className="px-2 py-2 text-right text-[9px] font-bold uppercase tracking-[0.2em] text-violet-300/80 font-mono-techy">Interest (₹)</th>
-                                      <th className="px-2 py-2 text-right text-[9px] font-bold uppercase tracking-[0.2em] text-violet-300/80 font-mono-techy">Penal (₹)</th>
-                                      <th className="px-2 py-2 text-right text-[9px] font-bold uppercase tracking-[0.2em] text-violet-300/80 font-mono-techy">IOD (₹)</th>
-                                      <th className="px-2 py-2 text-right text-[9px] font-bold uppercase tracking-[0.2em] text-violet-300/80 font-mono-techy">Expected (A)</th>
-                                      <th className="px-2 py-2 text-right text-[9px] font-bold uppercase tracking-[0.2em] text-violet-300/80 font-mono-techy">Actual (B)*</th>
-                                      <th className="px-2 py-2 text-right text-[9px] font-bold uppercase tracking-[0.2em] text-violet-300/80 font-mono-techy">Diff (B−A)</th>
-                                      <th className="px-2 py-2 text-left text-[9px] font-bold uppercase tracking-[0.2em] text-violet-300/80 font-mono-techy">Audit Remark</th>
-                                    </tr>
-                                  </thead>
-                                  <tbody className="font-mono-techy text-[10.5px]">
-                                    {analysis.records.map((r) => (
-                                      <tr
-                                        key={r.slNo}
-                                        className={`border-b border-white/5 ${
-                                          r.isOverdue
-                                            ? 'bg-rose-500/5'
-                                            : ''
-                                        }`}
-                                      >
-                                        <td className="px-2 py-1.5 text-violet-200/60">{r.slNo}</td>
-                                        <td className="px-2 py-1.5 text-cyan-200">{r.glNo}</td>
-                                        <td className="px-2 py-1.5 text-white break-all">{r.loanNo}</td>
-                                        <td className="px-2 py-1.5 text-white/85 break-words max-w-[140px]">{r.member}</td>
-                                        <td className="px-2 py-1.5 text-right text-cyan-200/80">
-                                          {r.sanctionedPrincipal > 0
-                                            ? r.sanctionedPrincipal.toLocaleString('en-IN', { maximumFractionDigits: 2 })
-                                            : '—'}
-                                        </td>
-                                        <td className={`px-2 py-1.5 text-right ${r.principal > 0 ? 'text-emerald-200' : 'text-white/40'}`}>
-                                          {r.principal > 0
-                                            ? r.principal.toLocaleString('en-IN', { maximumFractionDigits: 2 })
-                                            : '0.00'}
-                                        </td>
-                                        <td className="px-2 py-1.5 text-center text-cyan-200">
-                                          {r.isOverdue
-                                            ? `${r.normalDays}+${r.overdueDays}`
-                                            : r.activeDays}
-                                          {r.isOverdue && (
-                                            <span className="text-[8px] block text-rose-300">norm+OD</span>
-                                          )}
-                                        </td>
-                                        <td className={`px-2 py-1.5 text-center ${r.isOverdue ? 'text-rose-300 font-bold' : 'text-violet-200'}`}>
-                                          {r.roi.toFixed(2)}
-                                          {r.isOverdue && <span className="text-[8px] block">/{(r.roi + 2).toFixed(2)} OD</span>}
-                                        </td>
-                                        <td className="px-2 py-1.5 text-right text-yellow-200">
-                                          {r.interest.toLocaleString('en-IN', { maximumFractionDigits: 2 })}
-                                        </td>
-                                        <td className="px-2 py-1.5 text-right text-rose-200">
-                                          {r.penalInterest.toLocaleString('en-IN', { maximumFractionDigits: 2 })}
-                                        </td>
-                                        <td className="px-2 py-1.5 text-right text-orange-200">
-                                          {r.iod.toLocaleString('en-IN', { maximumFractionDigits: 2 })}
-                                        </td>
-                                        <td className="px-2 py-1.5 text-right text-emerald-300">
-                                          {r.expectedInterest.toLocaleString('en-IN', { maximumFractionDigits: 2 })}
-                                        </td>
-                                        <td className="px-2 py-1.5 text-right text-yellow-300 font-bold">
-                                          {r.actualInterest.toLocaleString('en-IN', { maximumFractionDigits: 2 })}
-                                        </td>
-                                        <td className={`px-2 py-1.5 text-right ${r.difference > 1 ? 'text-rose-300' : r.difference < -1 ? 'text-amber-300' : 'text-cyan-200/60'}`}>
-                                          {r.difference.toLocaleString('en-IN', { maximumFractionDigits: 2 })}
-                                        </td>
-                                        <td className="px-2 py-1.5 text-[10px] text-cyan-100/80 italic max-w-[200px]">{r.remark}</td>
-                                      </tr>
-                                    ))}
-                                  </tbody>
-                                </table>
-                              </div>
-                              <div className="mt-1 text-[10px] text-cyan-200/50 italic space-y-0.5">
-                                <div>* <b>Actual (B)</b> = Interest + Penal Interest + IOD (summed across all vouchers for the loan)</div>
-                                <div>† <b>Days</b> for overdue loans = normal_days (Disbursal → Due) + overdue_days (Due → Collection); ROI shown as base/base+2% (penal applied only to overdue days)</div>
-                                <div>‡ <b>Sanctioned (₹)</b> = original loan amount disbursed; used as Expected-interest base when Principal Collected is zero (interest-only recovery)</div>
-                              </div>
-
-                              <div className="mt-3 grid grid-cols-2 lg:grid-cols-4 gap-2 text-[11px]">
-                                <div className="px-3 py-2 rounded-lg bg-slate-900/60 border border-white/15">
-                                  <div className="text-[9px] uppercase tracking-[0.25em] text-cyan-200/60 font-mono-techy">Total Principal</div>
-                                  <div className="font-display font-black text-cyan-300">₹{analysis.totalPrincipal.toLocaleString('en-IN', { maximumFractionDigits: 2 })}</div>
-                                </div>
-                                <div className="px-3 py-2 rounded-lg bg-emerald-500/10 border border-emerald-400/30">
-                                  <div className="text-[9px] uppercase tracking-[0.25em] text-emerald-300/80 font-mono-techy">Expected Interest</div>
-                                  <div className="font-display font-black text-emerald-300">₹{analysis.totalExpected.toLocaleString('en-IN', { maximumFractionDigits: 2 })}</div>
-                                </div>
-                                <div className="px-3 py-2 rounded-lg bg-yellow-500/10 border border-yellow-400/30">
-                                  <div className="text-[9px] uppercase tracking-[0.25em] text-yellow-300/80 font-mono-techy">Actual Recovered</div>
-                                  <div className="font-display font-black text-yellow-300">₹{analysis.totalActual.toLocaleString('en-IN', { maximumFractionDigits: 2 })}</div>
-                                </div>
-                                <div className={`px-3 py-2 rounded-lg border ${analysis.netDiscrepancy > 0 ? 'bg-rose-500/10 border-rose-400/30' : analysis.netDiscrepancy < 0 ? 'bg-amber-500/10 border-amber-400/30' : 'bg-slate-900/60 border-white/15'}`}>
-                                  <div className="text-[9px] uppercase tracking-[0.25em] font-mono-techy opacity-80">Net Discrepancy</div>
-                                  <div className={`font-display font-black ${analysis.netDiscrepancy > 0 ? 'text-rose-300' : analysis.netDiscrepancy < 0 ? 'text-amber-300' : 'text-cyan-300'}`}>₹{analysis.netDiscrepancy.toLocaleString('en-IN', { maximumFractionDigits: 2 })}</div>
-                                </div>
-                              </div>
-
-                              <div className="mt-2 text-[10px] text-cyan-200/50 italic">
-                                {analysis.extractedNote}
-                              </div>
-
-                              {/* Download Excel / PDF for this loan recovery file */}
-                              <div className="mt-3 flex flex-wrap items-center gap-2">
-                                <div className="text-[9px] uppercase tracking-[0.3em] text-violet-200/70 font-mono-techy font-bold mr-1">
-                                  Download :
-                                </div>
-                                <button
-                                  type="button"
-                                  onClick={() =>
-                                    downloadLoanRecoveryCSV(analysis)
-                                  }
-                                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-emerald-400/40 bg-gradient-to-r from-emerald-500/15 to-cyan-500/15 hover:from-emerald-500/25 hover:to-cyan-500/25 transition-all duration-300"
-                                >
-                                  <span className="text-sm">📊</span>
-                                  <span className="font-display tracking-[0.12em] uppercase text-[9px] font-black text-emerald-200">
-                                    Excel (CSV)
-                                  </span>
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={() =>
-                                    downloadLoanRecoveryPDF(analysis)
-                                  }
-                                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-rose-400/40 bg-gradient-to-r from-rose-500/15 to-pink-500/15 hover:from-rose-500/25 hover:to-pink-500/25 transition-all duration-300"
-                                >
-                                  <span className="text-sm">📄</span>
-                                  <span className="font-display tracking-[0.12em] uppercase text-[9px] font-black text-rose-200">
-                                    PDF
-                                  </span>
-                                </button>
-                              </div>
-
-                              {/* Per-file opt-in for Defect Sheet */}
-                              <div className="mt-4 rounded-2xl border border-violet-400/30 bg-gradient-to-r from-violet-500/5 via-fuchsia-500/5 to-violet-500/5 p-3 flex items-center justify-between gap-3 flex-wrap">
-                                <div className="flex items-center gap-3 flex-1 min-w-[220px]">
-                                  <div
-                                    className={`w-9 h-9 rounded-xl flex items-center justify-center shrink-0 ${
-                                      loanRecoveryIncludeMap[
-                                        analysis.fileName
-                                      ]
-                                        ? 'bg-violet-500/20 border border-violet-400/50'
-                                        : 'bg-slate-900/60 border border-white/15'
-                                    }`}
-                                  >
-                                    {loanRecoveryIncludeMap[
-                                      analysis.fileName
-                                    ] ? (
-                                      <CheckCircle2
-                                        className="w-4 h-4 text-violet-300"
-                                        strokeWidth={2.5}
-                                      />
-                                    ) : (
-                                      <ScrollText
-                                        className="w-4 h-4 text-violet-300"
-                                        strokeWidth={2}
-                                      />
-                                    )}
-                                  </div>
-                                  <div>
-                                    <div className="font-display text-xs font-black text-white tracking-[0.06em]">
-                                      {loanRecoveryIncludeMap[
-                                        analysis.fileName
-                                      ]
-                                        ? `"${analysis.fileName}" added to Defect Sheet`
-                                        : `Add "${analysis.fileName}" to Auditor Defect Sheet?`}
-                                    </div>
-                                    <div className="text-[9px] text-violet-200/60 font-mono-techy uppercase tracking-[0.15em] mt-0.5">
-                                      {loanRecoveryIncludeMap[
-                                        analysis.fileName
-                                      ]
-                                        ? 'File name will appear as the defect heading'
-                                        : 'File name will be used as the defect heading if added'}
-                                    </div>
-                                  </div>
-                                </div>
-                                <button
-                                  type="button"
-                                  onClick={() =>
-                                    setLoanRecoveryIncludeMap(
-                                      (m) => ({
-                                        ...m,
-                                        [analysis.fileName]:
-                                          !m[analysis.fileName],
-                                      })
-                                    )
-                                  }
-                                  className={`shrink-0 px-4 py-2 rounded-lg font-display tracking-[0.12em] uppercase text-[10px] font-black border transition-all duration-300 ${
-                                    loanRecoveryIncludeMap[
-                                      analysis.fileName
-                                    ]
-                                      ? 'border-rose-400/50 bg-rose-500/10 text-rose-200 hover:bg-rose-500/20'
-                                      : 'border-violet-400/50 bg-gradient-to-r from-violet-500/20 via-fuchsia-500/20 to-violet-500/20 text-violet-200 hover:from-violet-500/30 hover:via-fuchsia-500/30 hover:to-violet-500/30 shadow-[0_0_20px_rgba(168,85,247,0.2)]'
-                                  }`}
-                                >
-                                  {loanRecoveryIncludeMap[
-                                    analysis.fileName
-                                  ]
-                                    ? '✕ Remove'
-                                    : '+ Add to Defects'}
-                                </button>
-                              </div>
-                            </>
-                          )}
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* === AI LEGAL CHAT VIEW === */}
-          {activeView === 'aichat' && !loading && (
-            <div className="relative overflow-hidden rounded-[28px] border border-white/15 bg-slate-950/60 backdrop-blur-2xl shadow-[0_0_60px_rgba(217,70,239,0.15)] anim-slide-up">
-              <div className="absolute inset-0 cyber-grid opacity-30 pointer-events-none" />
-              <div className="absolute top-0 left-0 right-0 h-px bg-gradient-to-r from-transparent via-fuchsia-400/60 to-transparent" />
-
-              <div className="relative px-6 py-5 border-b border-white/10 bg-gradient-to-r from-fuchsia-500/10 via-violet-500/10 to-pink-500/10 flex items-center justify-between gap-4">
-                <div className="flex items-center gap-3">
-                  <div className="relative">
-                    <div className="absolute inset-0 bg-fuchsia-400 blur-xl opacity-60 animate-pulse" />
-                    <div className="relative w-11 h-11 rounded-xl bg-gradient-to-br from-fuchsia-400 via-pink-400 to-violet-400 flex items-center justify-center shadow-[0_0_25px_rgba(217,70,239,0.5)]">
-                      <Bot
-                        className="w-6 h-6 text-slate-950"
-                        strokeWidth={2.5}
-                      />
-                    </div>
-                  </div>
-                  <div>
-                    <div className="text-[10px] uppercase tracking-[0.4em] text-fuchsia-300/80 font-mono-techy font-bold">
-                      APCS Act · Rules · NABARD · Audit Manual
-                    </div>
-                    <h3 className="font-display text-lg lg:text-xl font-black tracking-[0.15em] gradient-text-fire">
-                      AI LEGAL CHAT
-                    </h3>
-                  </div>
-                </div>
-                <div className="flex items-center gap-2">
-                  <span
-                    className={`px-2.5 py-1 rounded-full text-[9px] uppercase tracking-[0.2em] font-mono-techy font-bold border inline-flex items-center gap-1.5 ${
-                      aiKey
-                        ? 'bg-emerald-500/15 border-emerald-400/40 text-emerald-200'
-                        : 'bg-amber-500/15 border-amber-400/40 text-amber-200'
-                    }`}
-                    title={
-                      aiKey
-                        ? 'Live AI active — Gemini answers your questions'
-                        : 'Offline mode — rule-based engine. Add an AI key for true AI.'
-                    }
-                  >
-                    <span
-                      className={`w-1.5 h-1.5 rounded-full ${
-                        aiKey ? 'bg-emerald-400 animate-pulse' : 'bg-amber-400'
-                      }`}
-                    />
-                    {aiKey ? 'Live AI' : 'Offline'}
-                  </span>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setAiKeyDraft('');
-                      setShowKeyPanel((v) => !v);
-                    }}
-                    className="px-3 py-1.5 rounded-lg border border-violet-400/40 bg-violet-500/10 hover:bg-violet-500/20 text-[10px] uppercase tracking-[0.2em] font-mono-techy font-bold text-violet-200 transition-colors inline-flex items-center gap-1.5"
-                  >
-                    <KeyRound className="w-3 h-3" strokeWidth={2.5} />
-                    AI Key
-                  </button>
-                  <label className="cursor-pointer px-3 py-1.5 rounded-lg border border-fuchsia-400/40 bg-fuchsia-500/10 hover:bg-fuchsia-500/20 text-[10px] uppercase tracking-[0.2em] font-mono-techy font-bold text-fuchsia-200 transition-colors inline-flex items-center gap-1.5">
-                    <FilePlus2 className="w-3 h-3" strokeWidth={2.5} />
-                    Add PDF
-                    <input
-                      type="file"
-                      accept=".pdf,application/pdf"
-                      className="hidden"
-                      onChange={(e) => {
-                        const f = e.target.files?.[0];
-                        if (f) handleAddUserReference(f);
-                        e.target.value = '';
-                      }}
-                    />
-                  </label>
-                  <button
-                    type="button"
-                    onClick={() =>
-                      setChatMessages([
-                        {
-                          role: 'ai',
-                          content:
-                            "Chat cleared. Ask me about any section, rule, or paragraph of the APCS Act/Rules/Audit Manual.",
-                        },
-                      ])
-                    }
-                    className="px-3 py-1.5 rounded-lg border border-white/15 bg-white/5 hover:bg-white/10 text-[10px] uppercase tracking-[0.2em] font-mono-techy font-bold text-cyan-200/80 transition-colors"
-                  >
-                    Clear
-                  </button>
-                </div>
-              </div>
-
-              {/* AI key panel — paste a Google Gemini API key to enable live AI */}
-              {showKeyPanel && (
-                <div className="relative px-6 py-4 border-b border-white/10 bg-slate-950/50 anim-slide-up">
-                  <div className="text-[10px] uppercase tracking-[0.25em] text-violet-300/90 font-mono-techy font-bold mb-2">
-                    Gemini AI Key {aiKey && '· key saved ✓'}
-                  </div>
-                  <div className="flex flex-col sm:flex-row gap-2">
-                  {/* Live AI test panel — exercises the same code path the chat uses */}
-<div className="mb-4 rounded-2xl border border-violet-400/30 bg-gradient-to-r from-violet-500/5 via-fuchsia-500/5 to-violet-500/5 p-4">
-  <div className="flex items-center gap-2 mb-2">
-    <Zap className="w-3.5 h-3.5 text-violet-300" strokeWidth={2.5} />
-    <div className="text-[10px] uppercase tracking-[0.3em] text-violet-300/90 font-mono-techy font-bold">
-      Test Live AI · {hasGeminiKey() ? 'KEY DETECTED — WILL CALL GEMINI' : 'NO KEY — WILL USE OFFLINE FALLBACK'}
-    </div>
-  </div>
-
-  <div className="flex flex-col gap-2">
-    <textarea
-      value={aiTestQuestion}
-      onChange={(e) => setAiTestQuestion(e.target.value)}
-      rows={2}
-      placeholder="Type a test question…"
-      className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-[13px] text-slate-800 placeholder:text-slate-400 focus:outline-none vibgyor-input-focus resize-none"
-    />
-    <div className="flex items-center gap-2">
-      <button
-        type="button"
-        onClick={runAiKeyTest}
-        disabled={aiTestRunning || !aiTestQuestion.trim()}
-        className="flex-1 inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-violet-600 text-white text-[12px] font-display tracking-[0.18em] uppercase font-bold hover:bg-violet-500 disabled:opacity-40 transition-colors"
-      >
-        <Zap className="w-3.5 h-3.5" strokeWidth={2.5} />
-        {aiTestRunning ? 'Calling…' : hasGeminiKey() ? 'Test Live Gemini' : 'Test Offline Fallback'}
-      </button>
-      <button
-        type="button"
-        onClick={() => setAiTestResult(null)}
-        disabled={!aiTestResult}
-        className="px-4 py-2.5 rounded-xl bg-white text-slate-700 text-[12px] font-bold border border-slate-200 hover:border-rose-300 hover:text-rose-600 transition-colors disabled:opacity-40"
-      >
-        Clear
-      </button>
-    </div>
-  </div>
-
-  {aiTestResult && (
-    <div
-      className={`mt-3 rounded-xl border p-3 anim-row ${
-        aiTestResult.mode === 'live'
-          ? 'border-emerald-400/40 bg-emerald-500/5'
-          : aiTestResult.mode === 'offline'
-          ? 'border-amber-400/40 bg-amber-500/5'
-          : 'border-rose-400/40 bg-rose-500/5'
-      }`}
-    >
-      <div className="flex items-center justify-between gap-2 flex-wrap mb-2">
-        <div className="flex items-center gap-2">
-          {aiTestResult.mode === 'live' ? (
-            <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[9px] tracking-[0.2em] font-mono-techy font-bold border bg-emerald-500/15 border-emerald-400/40 text-emerald-300 uppercase">
-              <CheckCircle2 className="w-3 h-3" strokeWidth={3} />
-              LIVE · Gemini responded
-            </span>
-          ) : aiTestResult.mode === 'offline' ? (
-            <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[9px] tracking-[0.2em] font-mono-techy font-bold border bg-amber-500/15 border-amber-400/40 text-amber-300 uppercase">
-              <AlertCircle className="w-3 h-3" strokeWidth={3} />
-              OFFLINE · corpus / keyword engine
-            </span>
-          ) : (
-            <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[9px] tracking-[0.2em] font-mono-techy font-bold border bg-rose-500/15 border-rose-400/40 text-rose-300 uppercase">
-              <AlertCircle className="w-3 h-3" strokeWidth={3} />
-              ERROR
-            </span>
-          )}
-          <span className="text-[10px] text-cyan-200/60 font-mono-techy">
-            · {aiTestResult.ms} ms
-          </span>
-        </div>
-      </div>
-      {aiTestResult.error ? (
-        <pre className="text-[11px] text-rose-200/90 whitespace-pre-wrap font-mono-techy leading-relaxed">
-          {aiTestResult.error}
-        </pre>
-      ) : (
-        <p className="text-[12px] text-white/85 leading-relaxed whitespace-pre-wrap">
-          {aiTestResult.text}
-        </p>
-      )}
-      {aiTestResult.note && (
-        <p className="mt-2 text-[10px] text-cyan-200/50 italic leading-relaxed">
-          {aiTestResult.note}
-        </p>
-      )}
-    </div>
-  )}
-</div>
-                    <input
-                      type="password"
-                      value={aiKeyDraft}
-                      onChange={(e) => setAiKeyDraft(e.target.value)}
-                      placeholder={
-                        aiKey ? 'Enter a new key to replace…' : 'AIza…'
-                      }
-                      autoComplete="off"
-                      className="flex-1 bg-white border border-slate-200 rounded-xl px-4 py-2.5 text-sm text-slate-800 placeholder:text-slate-400 focus:outline-none vibgyor-input-focus"
-                    />
-                    <button
-                      type="button"
-                      onClick={saveAiKey}
-                      disabled={!aiKeyDraft.trim()}
-                      className="px-5 py-2.5 rounded-xl bg-violet-600 text-white text-sm font-bold tracking-wide hover:bg-violet-500 disabled:opacity-40 transition-colors"
-                    >
-                      Save
-                    </button>
-                    {aiKey && (
-                      <button
-                        type="button"
-                        onClick={clearAiKey}
-                        className="px-5 py-2.5 rounded-xl bg-white text-slate-700 text-sm font-bold tracking-wide border border-slate-200 hover:border-rose-300 hover:text-rose-600 transition-colors"
-                      >
-                        Remove
-                      </button>
-                    )}
-                  </div>
-                  <p className="mt-2 text-[10px] text-cyan-200/50 leading-relaxed">
-                    Stored locally in this browser only (never bundled). With a key,
-                    the chat reasons with Gemini (draft → humanize) and cites case-law;
-                    without it, the offline reference engine is used.
-                  </p>
-                </div>
-              )}
-
-              {/* Corpus status strip */}
-              {(corpusStatus === 'loading' ||
-                corpus.length > 0) && (
-                <div className="relative px-6 py-2.5 border-b border-white/10 bg-slate-950/40 flex items-center justify-between flex-wrap gap-2">
-                  <div className="flex items-center gap-2 flex-wrap text-[10px] font-mono-techy uppercase tracking-[0.25em]">
-                    {corpusStatus === 'loading' ? (
-                      <span className="text-fuchsia-300 animate-pulse">
-                        ⏳ Indexing references… {corpusProgress.done}/
-                        {corpusProgress.total}
-                      </span>
-                    ) : (
-                      <span className="text-emerald-300">
-                        ✓ {corpus.length} reference(s) indexed
-                      </span>
-                    )}
-                  </div>
-                  {corpus.length > 0 && (
-                    <div className="flex flex-wrap gap-1.5">
-                      {corpus.map((d) => (
-                        <span
-                          key={d.id}
-                          className={`px-2 py-0.5 rounded-full text-[9px] font-mono-techy font-bold border ${
-                            d.source === 'user'
-                              ? 'bg-lime-400/15 border-lime-400/40 text-lime-200'
-                              : 'bg-fuchsia-400/10 border-fuchsia-400/30 text-fuchsia-200'
-                          }`}
-                        >
-                          {d.name} · {d.pages.length}p
-                          {d.source === 'user' && (
-                            <button
-                              type="button"
-                              onClick={() =>
-                                handleRemoveUserReference(d.id)
-                              }
-                              className="ml-1 text-rose-300 hover:text-rose-400"
-                              title="Remove"
-                            >
-                              ×
-                            </button>
-                          )}
-                        </span>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              )}
-
-              <div
-                className="relative p-5 space-y-4 max-h-[55vh] overflow-y-auto"
-                style={{ scrollbarGutter: 'stable' }}
-              >
-                {chatMessages.map((m, idx) => (
-                  <div
-                    key={idx}
-                    className={`flex items-start gap-3 anim-slide-up ${m.role === 'user' ? 'flex-row-reverse' : ''}`}
-                    style={{ animationDelay: `${idx * 0.05}s` }}
-                  >
-                    <div
-                      className={`shrink-0 w-8 h-8 rounded-lg flex items-center justify-center ${
-                        m.role === 'user'
-                          ? 'bg-cyan-500/20 border border-cyan-400/40'
-                          : 'bg-fuchsia-500/20 border border-fuchsia-400/40'
-                      }`}
-                    >
-                      {m.role === 'user' ? (
-                        <UserIcon
-                          className="w-4 h-4 text-cyan-300"
-                          strokeWidth={2.5}
-                        />
-                      ) : (
-                        <Bot
-                          className="w-4 h-4 text-fuchsia-300"
-                          strokeWidth={2.5}
-                        />
-                      )}
-                    </div>
-                    <div
-                      className={`max-w-[85%] rounded-2xl px-4 py-3 text-[13px] leading-relaxed border ${
-                        m.role === 'user'
-                          ? 'bg-cyan-500/10 border-cyan-400/30 text-cyan-50/95'
-                          : 'bg-slate-900/60 border-white/15 text-white/90'
-                      }`}
-                    >
-                      <div className="whitespace-pre-wrap">
-                        {m.content}
-                      </div>
-                      {m.citations && m.citations.length > 0 && (
-                        <div className="mt-3 pt-3 border-t border-white/10 space-y-2">
-                          <div className="text-[9px] uppercase tracking-[0.3em] text-fuchsia-300/80 font-mono-techy font-bold">
-                            Excerpts from indexed references
-                          </div>
-                          {m.citations.map((c, ci) => (
-                            <div
-                              key={ci}
-                              className="rounded-lg bg-fuchsia-500/5 border border-fuchsia-400/20 p-2.5"
-                            >
-                              <div className="text-[10px] font-mono-techy font-bold text-fuchsia-300/90 mb-1">
-                                📘 {c.doc} · page {c.page}
-                              </div>
-                              <div className="text-[12px] text-white/80 italic leading-relaxed">
-                                {c.snippet}
-                              </div>
-                            </div>
-                          ))}
-                        </div>
-                      )}
-                      {m.references && m.references.length > 0 && (
-                        <div className="mt-3 pt-3 border-t border-white/10 space-y-1.5">
-                          <div className="text-[9px] uppercase tracking-[0.3em] text-cyan-300/80 font-mono-techy font-bold">
-                            Case-law &amp; statute references
-                          </div>
-                          {m.references.map((r, ri) => (
-                            <a
-                              key={ri}
-                              href={r.url}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="block text-[12px] text-cyan-300 hover:text-cyan-200 underline underline-offset-2 break-words"
-                            >
-                              🔗 {r.label}
-                            </a>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                ))}
-                {chatTyping && (
-                  <div className="flex items-start gap-3">
-                    <div className="shrink-0 w-8 h-8 rounded-lg flex items-center justify-center bg-fuchsia-500/20 border border-fuchsia-400/40">
-                      <Bot
-                        className="w-4 h-4 text-fuchsia-300"
-                        strokeWidth={2.5}
-                      />
-                    </div>
-                    <div className="rounded-2xl px-4 py-3 bg-slate-900/60 border border-white/15 text-white/60 italic text-[12px]">
-                      {hasGeminiKey()
-                        ? 'Researching the law, drafting & humanizing the answer…'
-                        : 'Looking up the law…'}
-                    </div>
-                  </div>
-                )}
-              </div>
-
-              <div className="relative border-t border-white/10 p-4 bg-slate-900/40">
-                <form
-                  onSubmit={(e) => {
-                    e.preventDefault();
-                    const q = chatInput.trim();
-                    if (!q) return;
-                    // recent turns as conversation context for the AI agent
-                    const history = chatMessages
-                      .filter((m) => m.role === 'user' || m.role === 'ai')
-                      .slice(-6)
-                      .map((m) => ({
-                        role: m.role === 'ai' ? 'assistant' : 'user',
-                        content: m.content,
-                      }));
-                    setChatMessages((prev) => [
-                      ...prev,
-                      { role: 'user', content: q },
-                    ]);
-                    setChatInput('');
-                    setChatTyping(true);
-                    (async () => {
-                      try {
-                        // AI agent: draft legal narrative -> humanize -> references
-                        const { text, references } =
-                          await generateLegalAgentAnswer(q, history);
-                        setChatMessages((prev) => [
-                          ...prev,
-                          { role: 'ai', content: text, references },
-                        ]);
-                      } catch (err) {
-                        // Fallback to the offline corpus / keyword engine
-                        const { text, citations } = answerWithCorpus(q);
-                        const prefix =
-                          err && err.code === 'NO_API_KEY'
-                            ? ''
-                            : '⚠️ AI service unavailable — showing the offline reference engine instead.\n\n';
-                        setChatMessages((prev) => [
-                          ...prev,
-                          {
-                            role: 'ai',
-                            content: prefix + text,
-                            citations,
-                            references: buildCaseLawReferences(q),
-                          },
-                        ]);
-                      } finally {
-                        setChatTyping(false);
-                      }
-                    })();
-                  }}
-                  className="flex items-center gap-2"
-                >
-                  <input
-                    type="text"
-                    value={chatInput}
-                    onChange={(e) => setChatInput(e.target.value)}
-                    placeholder="Ask about Section 50, Rule 41(C)(6), Para 7.5, Annexure-8…"
-                    className="flex-1 bg-white border border-slate-200 rounded-xl px-4 py-3 text-sm text-slate-800 placeholder:text-slate-400 focus:outline-none vibgyor-input-focus"
-                  />
-                  <button
-                    type="submit"
-                    disabled={chatTyping || !chatInput.trim()}
-                    className="group relative shrink-0 disabled:opacity-40"
-                  >
-                    <span className="absolute -inset-0.5 bg-gradient-to-r from-fuchsia-400 via-pink-400 to-violet-400 rounded-xl blur opacity-50 group-hover:opacity-80 transition-opacity" />
-                    <span className="relative inline-flex items-center gap-2 px-5 py-3 rounded-xl bg-gradient-to-r from-fuchsia-500 via-pink-500 to-violet-500 text-white font-display tracking-[0.18em] uppercase text-[11px] font-black">
-                      <Send className="w-4 h-4" strokeWidth={2.8} />
-                      Send
-                    </span>
-                  </button>
-                </form>
-                <div className="mt-3 flex flex-wrap gap-2 text-[10px]">
-                  {[
-                    'Section 50',
-                    'Section 55-A',
-                    'Section 71',
-                    'Section 115-D',
-                    'Rule 41(C)(6)',
-                    'Para 7.1',
-                    'Para 7.5',
-                    'IRAC norms',
-                  ].map((q) => (
-                    <button
-                      key={q}
-                      type="button"
-                      onClick={() => setChatInput(q)}
-                      className="px-2.5 py-1 rounded-full border border-white/10 bg-white/5 hover:bg-fuchsia-500/15 hover:border-fuchsia-400/40 text-cyan-200/70 hover:text-fuchsia-200 transition-colors uppercase tracking-[0.18em] font-mono-techy font-bold"
-                    >
-                      {q}
-                    </button>
-                  ))}
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* === DEFECT SHEET GENERATOR VIEW === */}
-          {activeView === 'generator' && !loading && (
-            <div className="space-y-6 anim-slide-up">
-              <div className="relative overflow-hidden rounded-[28px] border border-white/15 bg-slate-950/60 backdrop-blur-2xl shadow-[0_0_60px_rgba(132,204,22,0.15)]">
-                <div className="absolute inset-0 cyber-grid opacity-30 pointer-events-none" />
-                <div className="absolute top-0 left-0 right-0 h-px bg-gradient-to-r from-transparent via-lime-400/60 to-transparent" />
-                <div className="relative px-6 py-5 border-b border-white/10 bg-gradient-to-r from-lime-500/10 via-emerald-500/10 to-cyan-500/10 flex items-center gap-3">
-                  <div className="relative">
-                    <div className="absolute inset-0 bg-lime-400 blur-xl opacity-60 animate-pulse" />
-                    <div className="relative w-11 h-11 rounded-xl bg-gradient-to-br from-lime-400 via-emerald-400 to-cyan-400 flex items-center justify-center shadow-[0_0_25px_rgba(132,204,22,0.5)]">
-                      <FilePlus2
-                        className="w-6 h-6 text-slate-950"
-                        strokeWidth={2.5}
-                      />
-                    </div>
-                  </div>
-                  <div>
-                    <div className="text-[10px] uppercase tracking-[0.4em] text-lime-300/80 font-mono-techy font-bold">
-                      Compose Custom Defects
-                    </div>
-                    <h3 className="font-display text-lg lg:text-xl font-black tracking-[0.15em] gradient-text">
-                      DEFECT SHEET GENERATOR
-                    </h3>
-                  </div>
-                </div>
-
-                <div className="relative p-6 space-y-4">
-                  <div className="grid grid-cols-1 lg:grid-cols-[180px_1fr] gap-3">
-                    <label>
-                      <div className="text-[10px] uppercase tracking-[0.3em] text-lime-300/80 font-mono-techy font-bold mb-2">
-                        Category
-                      </div>
-                      <select
-                        value={customDefectDraft.category}
-                        onChange={(e) =>
-                          setCustomDefectDraft((d) => ({
-                            ...d,
-                            category: e.target.value,
-                          }))
-                        }
-                        className="w-full bg-slate-950/70 border border-white/15 rounded-xl px-3 py-2.5 text-sm text-white focus:outline-none focus:border-lime-400/60"
-                      >
-                        <option value="financial">B.1 Financial</option>
-                        <option value="accounting">B.2 Accounting</option>
-                        <option value="administrative">B.3 Administrative</option>
-                      </select>
-                    </label>
-                    <label>
-                      <div className="text-[10px] uppercase tracking-[0.3em] text-lime-300/80 font-mono-techy font-bold mb-2">
-                        Defect Title
-                      </div>
-                      <input
-                        type="text"
-                        value={customDefectDraft.title}
-                        onChange={(e) =>
-                          setCustomDefectDraft((d) => ({
-                            ...d,
-                            title: e.target.value,
-                          }))
-                        }
-                        placeholder="e.g. Loan Disbursement Without Proper Documentation"
-                        className="w-full bg-slate-950/70 border border-white/15 rounded-xl px-3 py-2.5 text-sm text-white placeholder:text-cyan-200/40 focus:outline-none focus:border-lime-400/60"
-                      />
-                    </label>
-                  </div>
-
-                  <label>
-                    <div className="text-[10px] uppercase tracking-[0.3em] text-lime-300/80 font-mono-techy font-bold mb-2">
-                      Narrative
-                    </div>
-                    <textarea
-                      value={customDefectDraft.narrative}
-                      onChange={(e) =>
-                        setCustomDefectDraft((d) => ({
-                          ...d,
-                          narrative: e.target.value,
-                        }))
-                      }
-                      rows={5}
-                      placeholder="Describe the defect, cite the relevant Section/Rule, set out the impact, and prescribe the corrective action…"
-                      className="w-full bg-slate-950/70 border border-white/15 rounded-xl px-3 py-2.5 text-sm text-white placeholder:text-cyan-200/40 focus:outline-none focus:border-lime-400/60 leading-relaxed"
-                    />
-                  </label>
-
-                  <div className="flex items-center justify-between gap-3 flex-wrap">
-                    <div className="text-[10px] text-cyan-200/60 italic">
-                      Custom defects added here are appended to the
-                      categorised Audit Defects sheet automatically.
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        const t = customDefectDraft.title.trim();
-                        const n = customDefectDraft.narrative.trim();
-                        if (!t || !n) return;
-                        const { narrative, citations } =
-                          generateDefectNarrative(
-                            t,
-                            n,
-                            customDefectDraft.category
-                          );
-                        setDefectPreview({
-                          title: t,
-                          category: customDefectDraft.category,
-                          rawNote: n,
-                          aiNarrative: narrative,
-                          citations,
-                        });
-                      }}
-                      disabled={
-                        !customDefectDraft.title.trim() ||
-                        !customDefectDraft.narrative.trim()
-                      }
-                      className="group relative disabled:opacity-40"
-                    >
-                      <span className="absolute -inset-0.5 bg-gradient-to-r from-lime-400 via-emerald-400 to-cyan-400 rounded-xl blur opacity-50 group-hover:opacity-80 transition-opacity" />
-                      <span className="relative inline-flex items-center gap-2 px-5 py-3 rounded-xl bg-gradient-to-r from-lime-500 via-emerald-500 to-cyan-500 text-slate-950 font-display tracking-[0.18em] uppercase text-[11px] font-black">
-                        <Sparkles
-                          className="w-4 h-4"
-                          strokeWidth={2.8}
-                        />
-                        Generate AI Narrative
-                      </span>
-                    </button>
-                  </div>
-
-                  {/* AI Preview & Confirm panel */}
-                  {defectPreview && (
-                    <div className="mt-5 rounded-2xl border border-emerald-400/40 bg-emerald-500/5 p-5 anim-row">
-                      <div className="flex items-start justify-between gap-3 mb-3">
-                        <div>
-                          <div className="text-[10px] uppercase tracking-[0.3em] text-emerald-700 font-mono-techy font-bold mb-1 flex items-center gap-1.5">
-                            <Bot className="w-3 h-3" strokeWidth={2.5} />
-                            AI Auditor Preview — Review before adding
-                          </div>
-                          <div className="font-display font-black text-base tracking-[0.05em] text-gray-900">
-                            {defectPreview.title}
-                          </div>
-                          <div className="mt-1">
-                            <span className="inline-block px-2 py-0.5 rounded-full text-[9px] tracking-[0.2em] font-display font-bold border bg-lime-400/15 border-lime-400/40 text-lime-800 uppercase">
-                              {defectPreview.category === 'financial'
-                                ? 'B.1 Financial'
-                                : defectPreview.category === 'accounting'
-                                ? 'B.2 Accounting'
-                                : 'B.3 Administrative'}
-                            </span>
-                          </div>
-                        </div>
-                      </div>
-
-                      <div className="mb-3">
-                        <div className="text-[10px] uppercase tracking-[0.25em] text-gray-600 font-mono-techy font-bold mb-1.5">
-                          Suggested Humanised Narrative
-                        </div>
-                        <p
-                          className="text-[13px] text-gray-800 leading-relaxed text-justify"
-                          style={{
-                            fontFamily:
-                              "'Inter', system-ui, sans-serif",
-                          }}
-                        >
-                          {defectPreview.aiNarrative}
-                        </p>
-                      </div>
-
-                      <div className="mb-4">
-                        <div className="text-[10px] uppercase tracking-[0.25em] text-gray-600 font-mono-techy font-bold mb-1.5">
-                          Cited Provisions
-                        </div>
-                        <div className="flex flex-wrap gap-1.5">
-                          {defectPreview.citations.map((c, ci) => (
-                            <span
-                              key={ci}
-                              className="px-2 py-1 rounded-md text-[10px] bg-white border border-gray-300 text-gray-800 font-mono-techy"
-                            >
-                              {c}
-                            </span>
-                          ))}
-                        </div>
-                      </div>
-
-                      <div className="flex items-center gap-2 flex-wrap">
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setCustomDefects((prev) => [
-                              ...prev,
-                              {
-                                category: defectPreview.category,
-                                title: defectPreview.title,
-                                narrative: defectPreview.aiNarrative,
-                                id: Date.now(),
-                              },
-                            ]);
-                            setCustomDefectDraft({
-                              category: 'financial',
-                              title: '',
-                              narrative: '',
-                            });
-                            setDefectPreview(null);
-                          }}
-                          className="px-4 py-2 rounded-lg bg-gray-900 text-white text-[11px] font-display tracking-[0.18em] uppercase font-bold hover:bg-gray-800 inline-flex items-center gap-1.5"
-                        >
-                          <CheckCircle2 className="w-3.5 h-3.5" strokeWidth={2.5} />
-                          Confirm & Add to Defect Sheet
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            // Allow user to edit further; keep draft intact
-                            setDefectPreview(null);
-                          }}
-                          className="px-4 py-2 rounded-lg bg-white border border-gray-300 text-gray-900 text-[11px] font-display tracking-[0.18em] uppercase font-bold hover:bg-gray-50"
-                        >
-                          Edit / Re-draft
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setDefectPreview(null);
-                            setCustomDefectDraft({
-                              category: 'financial',
-                              title: '',
-                              narrative: '',
-                            });
-                          }}
-                          className="px-4 py-2 rounded-lg bg-white border border-rose-300 text-rose-700 text-[11px] font-display tracking-[0.18em] uppercase font-bold hover:bg-rose-50"
-                        >
-                          Discard
-                        </button>
-                      </div>
-                    </div>
-                  )}
-                </div>
-              </div>
-
-              {/* Existing custom defects list */}
-              <div className="relative overflow-hidden rounded-[28px] border border-white/15 bg-slate-950/55 backdrop-blur-2xl">
-                <div className="absolute inset-0 cyber-grid opacity-25 pointer-events-none" />
-                <div className="relative px-6 py-5 border-b border-white/10 flex items-center justify-between gap-3">
-                  <div className="flex items-center gap-2">
-                    <Sparkles className="w-3 h-3 text-lime-300" />
-                    <div className="font-display tracking-[0.18em] text-sm text-white font-black">
-                      CUSTOM DEFECTS
-                    </div>
-                  </div>
-                  <div className="px-3 py-2 rounded-xl bg-lime-500/10 border border-lime-400/30">
-                    <div className="text-[9px] uppercase tracking-[0.25em] text-lime-300/80 font-mono-techy">
-                      Total
-                    </div>
-                    <div className="font-display text-lg font-black text-lime-300 leading-none text-right">
-                      {customDefects.length}
-                    </div>
-                  </div>
-                </div>
-
-                <div className="relative p-5">
-                  {customDefects.length === 0 ? (
-                    <div className="text-center text-cyan-200/50 italic text-sm py-6">
-                      No custom defects added yet. Use the form above to
-                      compose an observation.
-                    </div>
-                  ) : (
-                    <ol className="space-y-3">
-                      {customDefects.map((d, idx) => (
-                        <li
-                          key={d.id}
-                          className="relative rounded-2xl border border-white/10 bg-slate-900/50 p-4 anim-row"
-                          style={{ animationDelay: `${idx * 0.05}s` }}
-                        >
-                          <div className="flex items-start justify-between gap-3 mb-2">
-                            <div className="flex items-center gap-2">
-                              <span className="px-2 py-0.5 rounded-full text-[9px] tracking-[0.2em] font-display font-bold border bg-lime-400/15 border-lime-400/40 text-lime-300 uppercase">
-                                {d.category === 'financial'
-                                  ? 'B.1 Financial'
-                                  : d.category === 'accounting'
-                                  ? 'B.2 Accounting'
-                                  : 'B.3 Administrative'}
-                              </span>
-                              <span className="font-display font-black text-white text-sm tracking-[0.05em]">
-                                {d.title}
-                              </span>
-                            </div>
-                            <button
-                              type="button"
-                              onClick={() =>
-                                setCustomDefects((prev) =>
-                                  prev.filter((x) => x.id !== d.id)
-                                )
-                              }
-                              className="shrink-0 w-7 h-7 rounded-lg border border-rose-400/30 bg-rose-500/10 hover:bg-rose-500/20 text-rose-300 flex items-center justify-center transition-colors"
-                              title="Remove"
-                            >
-                              <Trash2
-                                className="w-3.5 h-3.5"
-                                strokeWidth={2.5}
-                              />
-                            </button>
-                          </div>
-                          <p
-                            className="text-[12px] text-white/85 leading-relaxed text-justify"
-                            style={{
-                              fontFamily:
-                                "'Space Grotesk', system-ui, sans-serif",
-                            }}
-                          >
-                            {d.narrative}
-                          </p>
-                        </li>
-                      ))}
-                    </ol>
-                  )}
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* === AUDIT DEFECTS VIEW — Auditor's Observation / Defect Sheet === */}
-          {activeView === 'defects' && !loading && defectSheet && (
-            <div className="relative overflow-hidden rounded-[28px] border border-white/15 bg-slate-950/60 backdrop-blur-2xl shadow-[0_0_80px_rgba(168,85,247,0.18)] anim-slide-up mb-6">
-              <div className="absolute inset-0 cyber-grid opacity-30 pointer-events-none" />
-              <div className="absolute top-0 left-0 right-0 h-px bg-gradient-to-r from-transparent via-emerald-400/60 via-violet-400/60 to-transparent" />
-
-              {/* ── DOCUMENT HEADER ── */}
-              <div className="relative px-8 py-6 border-b border-white/15 bg-gradient-to-r from-emerald-500/12 via-violet-500/8 to-rose-500/12">
-                <div className="flex items-start justify-between gap-4 flex-wrap">
-                  <div className="flex items-center gap-4">
-                    <div className="relative">
-                      <div className="absolute inset-0 bg-violet-400 blur-2xl opacity-60 animate-pulse" />
-                      <div className="relative w-14 h-14 rounded-2xl bg-gradient-to-br from-emerald-400 via-violet-400 to-rose-400 flex items-center justify-center shadow-[0_0_30px_rgba(168,85,247,0.55)]">
-                        <ScrollText
-                          className="w-7 h-7 text-slate-950"
-                          strokeWidth={2.5}
-                        />
-                      </div>
-                    </div>
-                    <div>
-                      <div className="text-[10px] uppercase tracking-[0.45em] text-violet-300/80 font-mono-techy font-bold mb-1">
-                        Auditor's Observation Document · System Generated
-                      </div>
-                      <h2 className="font-display text-2xl lg:text-3xl font-black tracking-[0.12em] gradient-text-fire">
-                        AUDIT DEFECTS — OBSERVATION SHEET
-                      </h2>
-                      <div className="mt-1 text-[10px] uppercase tracking-[0.25em] text-cyan-300/70 font-mono-techy">
-                        An Initiative of Ministry of Cooperation, Govt. of India &amp; NABARD
-                      </div>
-                    </div>
-                  </div>
-                  <div className="flex flex-col gap-2 min-w-[200px]">
-                    <div className="px-4 py-2 rounded-xl bg-white/5 border border-white/15">
-                      <div className="text-[9px] uppercase tracking-[0.25em] text-cyan-200/60 font-mono-techy">
-                        Society
-                      </div>
-                      <div className="font-display text-sm font-bold text-white break-words leading-tight">
-                        {defectSheet.societyName}
-                      </div>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <div className="flex-1 px-3 py-2 rounded-xl bg-emerald-500/10 border border-emerald-400/30">
-                        <div className="text-[9px] uppercase tracking-[0.25em] text-emerald-300/80 font-mono-techy">
-                          Merits
-                        </div>
-                        <div className="font-display text-xl font-black text-emerald-300 leading-none">
-                          {defectSheet.merits.length}
-                        </div>
-                      </div>
-                      <div className="flex-1 px-3 py-2 rounded-xl bg-rose-500/10 border border-rose-400/30">
-                        <div className="text-[9px] uppercase tracking-[0.25em] text-rose-300/80 font-mono-techy">
-                          Demerits
-                        </div>
-                        <div className="font-display text-xl font-black text-rose-300 leading-none">
-                          {defectSheet.demerits.length}
-                        </div>
-                      </div>
-                    </div>
-                    <div className="text-[10px] uppercase tracking-[0.25em] text-cyan-200/60 font-mono-techy text-right">
-                      Audit Date · {defectSheet.auditDate}
-                    </div>
-                    <button
-                      onClick={printDefectSheet}
-                      type="button"
-                      className="group relative mt-1 flex items-center justify-center gap-2 px-4 py-3 rounded-xl border border-emerald-400/40 bg-gradient-to-r from-emerald-500/15 via-cyan-500/15 to-violet-500/15 hover:from-emerald-500/25 hover:via-cyan-500/25 hover:to-violet-500/25 transition-all duration-300 shadow-[0_0_25px_rgba(52,211,153,0.2)]"
-                    >
-                      <span className="absolute -inset-0.5 bg-gradient-to-r from-emerald-400 via-cyan-400 to-violet-400 rounded-xl blur opacity-30 group-hover:opacity-60 transition-opacity duration-300 pointer-events-none" />
-                      <Upload
-                        className="relative w-4 h-4 text-emerald-300 rotate-180"
-                        strokeWidth={2.5}
-                      />
-                      <span className="relative font-display tracking-[0.18em] uppercase text-[11px] font-black text-white">
-                        Print / Download
-                      </span>
-                    </button>
-                  </div>
-                </div>
-              </div>
-
-              {/* ── PART A — MERITS ── */}
-              <div className="relative px-8 py-6 border-b border-white/10 bg-gradient-to-b from-emerald-500/[0.04] to-transparent">
-                <div className="flex items-center gap-3 mb-5">
-                  <div className="w-1.5 h-7 bg-gradient-to-b from-emerald-400 to-cyan-400 rounded-full shadow-[0_0_12px_rgba(52,211,153,0.6)]" />
-                  <div>
-                    <div className="text-[10px] uppercase tracking-[0.4em] text-emerald-300/80 font-mono-techy font-bold">
-                      Part A
-                    </div>
-                    <h3 className="font-display text-xl font-black tracking-[0.15em] gradient-text">
-                      MERITS — COMPLIANCES &amp; STRENGTHS
-                    </h3>
-                  </div>
-                </div>
-                {defectSheet.merits.length === 0 ? (
-                  <div className="text-cyan-200/60 text-sm italic px-2 py-3 border-l-2 border-emerald-400/30">
-                    No specific merits were identified from the data
-                    placed before the audit during this verification.
-                  </div>
-                ) : (
-                  <ol className="space-y-4 list-none">
-                    {defectSheet.merits.map((m, idx) => (
-                      <li
-                        key={idx}
-                        className="anim-row relative pl-12"
-                        style={{ animationDelay: `${idx * 0.08}s` }}
-                      >
-                        <div className="absolute left-0 top-0 w-9 h-9 rounded-xl bg-emerald-500/15 border border-emerald-400/40 flex items-center justify-center shadow-[0_0_15px_rgba(52,211,153,0.25)]">
-                          <span className="font-display text-emerald-300 font-black text-sm">
-                            {String(idx + 1).padStart(2, '0')}
-                          </span>
-                        </div>
-                        <div className="font-display font-black tracking-[0.05em] text-emerald-200 text-base mb-1.5">
-                          {m.title}
-                        </div>
-                        <p
-                          className="text-[13px] text-emerald-50/90 leading-relaxed text-justify"
-                          style={{
-                            fontFamily:
-                              "'Space Grotesk', system-ui, sans-serif",
-                          }}
-                        >
-                          {m.narrative}
-                        </p>
-                      </li>
-                    ))}
-                  </ol>
-                )}
-              </div>
-
-              {/* ── PART B — DEMERITS (categorised) ── */}
-              <div className="relative px-8 py-6 bg-gradient-to-b from-rose-500/[0.04] to-transparent">
-                <div className="flex items-center gap-3 mb-3">
-                  <div className="w-1.5 h-7 bg-gradient-to-b from-rose-400 to-fuchsia-400 rounded-full shadow-[0_0_12px_rgba(244,63,94,0.6)]" />
-                  <div>
-                    <div className="text-[10px] uppercase tracking-[0.4em] text-rose-300/80 font-mono-techy font-bold">
-                      Part B
-                    </div>
-                    <h3 className="font-display text-xl font-black tracking-[0.15em] gradient-text-fire">
-                      DEMERITS — DEFECTS &amp; IRREGULARITIES
-                    </h3>
-                  </div>
-                </div>
-
-                <div className="text-[11px] text-cyan-100/70 italic mb-6 border-l-2 border-rose-400/30 pl-3 leading-relaxed">
-                  During the course of audit, the auditors have
-                  identified irregularities and defects which, in the
-                  professional opinion of the Lead Statutory Auditor,
-                  require reporting to the Managing Committee and/or
-                  the General Body for necessary resolution. The
-                  defects below are categorised into Financial,
-                  Accounting and Administrative Irregularities in
-                  accordance with the Audit Manual of PACS.
-                </div>
-
-                {defectSheet.demerits.length === 0 ? (
-                  <div className="text-emerald-200/80 text-sm italic px-2 py-3 border-l-2 border-emerald-400/40">
-                    No material defects were noticed during the audit
-                    verification. The Society is in substantial
-                    compliance with the APCS Act &amp; Rules, 1964.
-                  </div>
-                ) : (
-                  (() => {
-                    const groups = [
-                      {
-                        key: 'financial',
-                        label: 'B.1 · FINANCIAL IRREGULARITIES',
-                        sub: 'Budget overruns · Provisions violations · Loan / collection irregularities · Income mis-recognition',
-                        color: 'amber',
-                      },
-                      {
-                        key: 'accounting',
-                        label: 'B.2 · ACCOUNTING IRREGULARITIES',
-                        sub: 'Books & registers · Postings · Classification · Provisioning · NABARD norms',
-                        color: 'rose',
-                      },
-                      {
-                        key: 'administrative',
-                        label:
-                          'B.3 · ADMINISTRATIVE IRREGULARITIES',
-                        sub: 'Delegation · GB / MC meetings · Internal controls · Housekeeping · Compliance with prior defects',
-                        color: 'fuchsia',
-                      },
-                    ];
-
-                    let runningNo = 0;
-                    return groups.map((g) => {
-                      const items = defectSheet.demerits.filter(
-                        (d) => d.category === g.key
-                      );
-                      if (items.length === 0) return null;
-                      return (
-                        <div key={g.key} className="mb-7">
-                          <div
-                            className={`flex items-baseline gap-3 mb-3 pb-2 border-b border-${g.color}-400/25`}
-                          >
-                            <span
-                              className={`font-display text-${g.color}-300 font-black tracking-[0.12em] text-sm`}
-                            >
-                              {g.label}
-                            </span>
-                            <span
-                              className={`text-[9px] uppercase tracking-[0.25em] text-${g.color}-200/50 font-mono-techy hidden md:inline`}
-                            >
-                              · {g.sub}
-                            </span>
-                            <span
-                              className={`ml-auto text-[9px] uppercase tracking-[0.25em] text-${g.color}-200/60 font-mono-techy`}
-                            >
-                              {items.length} item{items.length === 1 ? '' : 's'}
-                            </span>
-                          </div>
-                          <ol className="space-y-5 list-none">
-                            {items.map((d) => {
-                              runningNo += 1;
-                              const num = runningNo;
-                              return (
-                                <li
-                                  key={`${g.key}-${num}`}
-                                  className="anim-row relative pl-12"
-                                  style={{
-                                    animationDelay: `${num * 0.06}s`,
-                                  }}
-                                >
-                                  <div className="absolute left-0 top-0 w-9 h-9 rounded-xl bg-rose-500/15 border border-rose-400/40 flex items-center justify-center shadow-[0_0_15px_rgba(244,63,94,0.25)]">
-                                    <span className="font-display text-rose-300 font-black text-sm">
-                                      {String(num).padStart(2, '0')}
-                                    </span>
-                                  </div>
-                                  <div className="font-display font-black tracking-[0.05em] text-rose-200 text-base mb-1.5">
-                                    {d.title}
-                                  </div>
-                                  <p
-                                    className="text-[13px] text-rose-50/90 leading-relaxed text-justify"
-                                    style={{
-                                      fontFamily:
-                                        "'Space Grotesk', system-ui, sans-serif",
-                                    }}
-                                  >
-                                    {d.narrative}
-                                  </p>
-                                </li>
-                              );
-                            })}
-                          </ol>
-                        </div>
-                      );
-                    });
-                  })()
-                )}
-              </div>
-
-              {/* ── FOOTER ── */}
-              <div className="relative px-8 py-4 border-t border-white/10 bg-slate-950/60 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2 text-[10px] uppercase tracking-[0.3em] font-mono-techy">
-                <div className="text-cyan-200/50">
-                  System Generated Report · Does Not Require Signature
-                </div>
-                <div className="text-cyan-200/40">
-                  Generated by · COOP·AUDIT·AI · Lead Statutory Auditor (Sim.)
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* === AUDIT DEFECTS VIEW — Mismatch list === */}
-          {activeView === 'defects' && !loading && (
-            <div className="relative overflow-hidden bg-slate-900/50 backdrop-blur-2xl rounded-[28px] border border-white/10 shadow-[0_0_60px_rgba(244,63,94,0.12)] anim-slide-up">
-              <div className="absolute inset-0 cyber-grid opacity-30 pointer-events-none" />
-              <div className="absolute top-0 left-0 right-0 h-px bg-gradient-to-r from-transparent via-rose-400/80 to-transparent" />
-
-              <div className="relative px-6 py-5 border-b border-white/10 bg-gradient-to-r from-rose-500/10 via-fuchsia-500/10 to-amber-500/10 flex items-center justify-between gap-4">
-                <div>
-                  <div className="flex items-center gap-2 mb-1">
-                    <ScrollText className="w-3 h-3 text-rose-300" />
-                    <div className="text-[10px] uppercase tracking-[0.4em] text-rose-300/80 font-mono-techy font-bold">
-                      Mismatches Only
-                    </div>
-                  </div>
-                  <h3 className="font-display text-lg lg:text-xl font-black tracking-[0.15em] gradient-text-fire">
-                    AUDIT DEFECTS
-                  </h3>
-                </div>
-                <div className="px-3 py-2 rounded-xl bg-rose-500/10 border border-rose-400/30">
-                  <div className="text-[9px] uppercase tracking-[0.2em] text-rose-300/80 font-mono-techy">
-                    Defects
-                  </div>
-                  <div className="font-display text-lg font-black text-rose-300 leading-none text-right">
-                    {auditResults.length - talliedCount}
-                  </div>
-                </div>
-              </div>
-
-              <div className="relative p-5 space-y-4">
-                {auditResults.filter((r) => !r.tallied).length === 0 ? (
-                  <div className="text-center p-10">
-                    <div className="text-5xl mb-3 anim-float">✅</div>
-                    <div className="font-display tracking-[0.15em] text-emerald-300 text-sm">
-                      NO DEFECTS DETECTED
-                    </div>
-                    <div className="text-xs text-cyan-200/50 mt-1 font-mono-techy">
-                      All audit verifications tallied successfully.
-                    </div>
-                  </div>
-                ) : (
-                  auditResults
-                    .filter((r) => !r.tallied)
-                    .map((result, index) => (
-                      <div
-                        key={index}
-                        className="relative overflow-hidden rounded-[24px] border border-rose-400/30 bg-slate-900/50 backdrop-blur-xl p-5 anim-row shadow-[0_0_40px_rgba(244,63,94,0.18)]"
-                        style={{ animationDelay: `${index * 0.1}s` }}
-                      >
-                        <div className="absolute left-0 top-0 bottom-0 w-1 bg-gradient-to-b from-rose-400 via-pink-400 to-fuchsia-400 shadow-[0_0_20px_currentColor]" />
-                        <div className="relative">
-                          <div className="flex items-start justify-between gap-3 mb-4">
-                            <div className="flex-1 min-w-0">
-                              <div className="font-display font-black tracking-[0.15em] text-white text-sm uppercase">
-                                {result.statementType}
-                              </div>
-                              <div className="text-[10px] text-cyan-200/60 break-all mt-1 font-mono-techy">
-                                {result.fileName}
-                              </div>
-                            </div>
-                            <span className="shrink-0 inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-rose-500/15 border border-rose-400/50 text-rose-300 font-display font-black text-[10px] uppercase tracking-[0.2em] shadow-[0_0_20px_rgba(244,63,94,0.4)] anim-shake">
-                              <XCircle className="w-3 h-3" strokeWidth={3} />
-                              Defect
-                            </span>
-                          </div>
-                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                            <div className="rounded-xl bg-gradient-to-br from-emerald-500/10 to-transparent border border-emerald-400/20 p-3">
-                              <div className="text-[9px] uppercase tracking-[0.25em] text-emerald-200/70 font-mono-techy font-bold mb-1.5">
-                                {result.label1}
-                              </div>
-                              <div className="font-display font-black text-emerald-300 text-lg break-all leading-tight">
-                                ₹{result.amount1.toLocaleString('en-IN')}
-                              </div>
-                            </div>
-                            <div className="rounded-xl bg-gradient-to-br from-violet-500/10 to-transparent border border-violet-400/20 p-3">
-                              <div className="text-[9px] uppercase tracking-[0.25em] text-violet-200/70 font-mono-techy font-bold mb-1.5">
-                                {result.label2}
-                              </div>
-                              <div className="font-display font-black text-yellow-300 text-lg break-all leading-tight">
-                                ₹{result.amount2.toLocaleString('en-IN')}
-                              </div>
-                            </div>
-                          </div>
-                          {result.aiRemark && (
-                            <div className="mt-3 text-[11px] italic px-3 py-2 rounded-lg border bg-rose-400/5 border-rose-400/20 text-rose-100/90">
-                              <span className="font-mono-techy font-bold">AI ▸</span> {result.aiRemark}
-                            </div>
-                          )}
-                        </div>
-                      </div>
-                    ))
-                )}
-              </div>
-            </div>
-          )}
-
-          {/* Dashboard action buttons — Print & Upload another file */}
-          {activeView === 'dashboard' && !loading && (detectedFiles.length > 0 || auditResults.length > 0) && (
-            <div className="no-print mt-6 flex flex-col sm:flex-row gap-3 justify-center anim-slide-up">
-              <button
-                type="button"
-                onClick={() => window.print()}
-                className="inline-flex items-center justify-center gap-2 px-6 py-3 rounded-xl bg-black text-white text-sm font-bold tracking-wide shadow-[0_4px_16px_rgba(0,0,0,0.25)] hover:bg-slate-800 transition-all duration-200"
-              >
-                <Printer className="w-4 h-4" />
-                Print
-              </button>
-              <button
-                type="button"
-                onClick={() => window.location.reload()}
-                className="inline-flex items-center justify-center gap-2 px-6 py-3 rounded-xl bg-white text-slate-800 text-sm font-bold tracking-wide border border-slate-200 shadow-[0_1px_3px_rgba(0,0,0,0.06)] hover:border-violet-300 hover:text-violet-600 transition-all duration-200"
-              >
-                <Upload className="w-4 h-4" />
-                Upload another file
-              </button>
-            </div>
-          )}
-
-          {/* Drag-and-drop empty state — accepts drops AND click-to-browse */}
-          {activeView === 'dashboard' && !loading &&
-            detectedFiles.length === 0 &&
-            auditResults.length === 0 && (
-              <div className="anim-slide-up flex flex-col justify-center min-h-[calc(100vh-290px)]">
-                {/* Welcome banner */}
-                <div className="text-center mb-4">
-                  <h2 className="font-display text-base lg:text-xl font-black tracking-[0.12em] gradient-text px-4 leading-snug">
-                    WELCOME USER, THIS IS FINANCIAL STATEMENT PDF ANALYSER
-                  </h2>
-                </div>
-              <label
-                onDragOver={(e) => {
-                  e.preventDefault();
-                  e.stopPropagation();
-                  if (!isDragging) setIsDragging(true);
-                }}
-                onDragEnter={(e) => {
-                  e.preventDefault();
-                  e.stopPropagation();
-                  setIsDragging(true);
-                }}
-                onDragLeave={(e) => {
-                  e.preventDefault();
-                  e.stopPropagation();
-                  // only clear when leaving the label itself, not entering children
-                  if (e.currentTarget.contains(e.relatedTarget)) return;
-                  setIsDragging(false);
-                }}
-                onDrop={(e) => {
-                  e.preventDefault();
-                  e.stopPropagation();
-                  setIsDragging(false);
-                  const file = e.dataTransfer.files?.[0];
-                  if (file) processZIP(file);
-                }}
-                className={`glossy-border-box block cursor-pointer relative overflow-hidden p-6 lg:p-8 text-center transition-all duration-300 ${
-                  isDragging
-                    ? 'scale-[1.02] shadow-[0_0_60px_rgba(124,58,237,0.4)]'
-                    : ''
-                }`}
-              >
-                <input
-                  type="file"
-                  accept=".zip,application/zip,application/x-zip-compressed"
-                  className="hidden"
-                  onChange={(event) => {
-                    const file = event.target.files?.[0];
-                    if (file) processZIP(file);
-                    event.target.value = '';
-                  }}
-                />
-                <div className="absolute inset-0 cyber-grid opacity-[0.06] pointer-events-none" />
-                {isDragging && (
-                  <>
-                    <div className="absolute -top-20 -right-20 w-64 h-64 rounded-full bg-violet-400/25 blur-3xl pointer-events-none animate-pulse" />
-                    <div className="absolute -bottom-20 -left-20 w-64 h-64 rounded-full bg-emerald-400/25 blur-3xl pointer-events-none animate-pulse" />
-                  </>
-                )}
-                <div className="relative">
-                  <div
-                    className={`text-5xl mb-2 ${
-                      isDragging ? 'animate-bounce' : 'anim-float'
-                    }`}
-                  >
-                    {isDragging ? '⬇️' : '📁'}
-                  </div>
-                  <h3 className="font-display text-xl lg:text-2xl font-black tracking-[0.2em] gradient-text mb-1.5">
-                    {isDragging
-                      ? 'RELEASE TO UPLOAD'
-                      : 'DRAG & DROP ZIP HERE'}
-                  </h3>
-                  <p className="text-[11px] text-slate-500 tracking-[0.15em] uppercase font-mono-techy max-w-md mx-auto">
-                    {isDragging
-                      ? 'Drop the file to begin AI verification'
-                      : 'Drop a ZIP with the cooperative audit PDFs or click to browse'}
-                  </p>
-                  <div className="mt-3 flex items-center justify-center gap-3 text-[10px] uppercase tracking-[0.2em] font-mono-techy text-slate-400">
-                    <span>Max 75 MB</span>
-                    <span className="text-slate-300">·</span>
-                    <span>ZIP folder only</span>
-                  </div>
-                </div>
-              </label>
-              </div>
-            )}
         </div>
       </main>
     </div>
+    </AuditContext.Provider>
   );
 }

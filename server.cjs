@@ -10,6 +10,15 @@ const { exec } = require('child_process');
 
 const PORT = process.env.PORT || 5173;
 
+// App version — kept in sync by scripts/pack.mjs (bundled package.json).
+const APP_VERSION = (() => {
+  try {
+    return 'V' + require('./package.json').version;
+  } catch {
+    return '';
+  }
+})();
+
 // When packaged by pkg, __dirname resolves inside the snapshot virtual
 // filesystem; `process.pkg` exists in that case. The 'dist' folder is
 // bundled via the package.json "pkg.assets" field.
@@ -86,7 +95,12 @@ server.listen(PORT, '127.0.0.1', () => {
   console.log('  ╔══════════════════════════════════════════════════════╗');
   console.log('  ║                                                      ║');
   console.log('  ║          COOP · AUDIT · AI — Local Server            ║');
-  console.log('  ║                                                      ║');
+  const verLine = APP_VERSION || '';
+  const pad = Math.max(0, 54 - verLine.length);
+  const left = Math.floor(pad / 2);
+  console.log(
+    '  ║' + ' '.repeat(left) + verLine + ' '.repeat(pad - left) + '║'
+  );
   console.log('  ║   Ready at:  ' + url.padEnd(40) + '║');
   console.log('  ║                                                      ║');
   console.log('  ║   Keep this window OPEN while using the app.         ║');

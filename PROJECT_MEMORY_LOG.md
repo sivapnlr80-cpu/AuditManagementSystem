@@ -17,7 +17,15 @@ A running record of goals, decisions, established rules, and pending work for th
   lucide-react icons, JSZip, pdfjs-dist. Packaged to a Windows `.exe` via `pkg`
   (`server.cjs` + built `dist/`).
 - **Primary source files:**
-  - `src/APCooperativeFinancialAnalyser.jsx` — the whole app (~7,200 lines, single component).
+  - `src/APCooperativeFinancialAnalyser.jsx` — app shell: all state, handlers, helpers,
+    login gate, sidebar nav, and the `auditCtx` context value (~5,780 lines).
+  - `src/context/AuditContext.jsx` — `AuditContext` + `useAudit()`; the shell wraps the
+    return in `<AuditContext.Provider value={auditCtx}>` so each menu view reads shared
+    state via `const { ... } = useAudit()`.
+  - `src/views/*.jsx` — **one file per menu** (added 2026-06-11): `DashboardView`,
+    `UploadDocumentsView`, `ReportAnalysisView`, `AuditDefectsView`, `LegalChatView`,
+    `DefectSheetGeneratorView`. To change a menu, edit its file; if it needs new shared
+    state, add the value to `auditCtx` in the shell and destructure it in the view.
   - `src/index.css` — theme + custom CSS (~1,150 lines).
 - **Dev preview:** Vite dev server on port **5173** (config in `.claude/launch.json`).
   Active preview serverId during this work: `6543d1e5-09f8-4b97-a9d8-fbdcde734d4c`.
