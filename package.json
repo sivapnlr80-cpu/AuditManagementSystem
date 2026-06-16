@@ -1,0 +1,45 @@
+{
+  "name": "coop-audit-ai",
+  "private": true,
+  "version": "2.0.1",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "lint": "eslint .",
+    "preview": "vite preview",
+    "start": "node server.cjs",
+    "pack:exe": "node scripts/pack.mjs",
+    "pack:exe:minor": "node scripts/pack.mjs --minor",
+    "pack:exe:major": "node scripts/pack.mjs --major"
+  },
+  "bin": "server.cjs",
+  "pkg": {
+    "assets": [
+      "dist/**/*"
+    ],
+    "outputPath": "release"
+  },
+  "dependencies": {
+    "@tailwindcss/vite": "^4.3.0",
+    "jszip": "^3.10.1",
+    "lucide-react": "^1.16.0",
+    "pdfjs-dist": "^5.7.284",
+    "react": "^19.2.6",
+    "react-dom": "^19.2.6",
+    "tailwindcss": "^4.3.0"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^6.0.1",
+    "@yao-pkg/pkg": "^6.20.0",
+    "eslint": "^10.3.0",
+    "eslint-plugin-react-hooks": "^7.1.1",
+    "eslint-plugin-react-refresh": "^0.5.2",
+    "globals": "^17.6.0",
+    "nexe": "^5.0.0-beta.4",
+    "vite": "^8.0.12"
+  }
+}
