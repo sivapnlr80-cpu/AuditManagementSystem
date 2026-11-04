@@ -24,6 +24,7 @@ import AuditDefectsView from './views/AuditDefectsView';
 import LegalChatView from './views/LegalChatView';
 import DefectSheetGeneratorView from './views/DefectSheetGeneratorView';
 import ConcurrentAuditView from './views/ConcurrentAuditView';
+import ViewErrorBoundary from './components/ViewErrorBoundary';
 
 // Extract the full text of an already-parsed PDF document. Kept separate from
 // extractPDFText so a single parsed document can be reused for both the full-text
@@ -1474,6 +1475,10 @@ export default function APCooperativeFinancialAnalyser() {
   const [totalCount, setTotalCount] = useState(0);
   const [currentStage, setCurrentStage] = useState('');
   const [activeView, setActiveView] = useState('dashboard');
+  // A shorter view opened after a long one must not start scrolled past its content.
+  useEffect(() => {
+    window.scrollTo(0, 0);
+  }, [activeView]);
   // ----- Admin login gate (client-side only) -----
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [loginUser, setLoginUser] = useState('');
@@ -6334,19 +6339,17 @@ tr.overdue { background: #fff0f0; }
             </div>
           )}
 
-          {activeView === 'dashboard' && !loading && <DashboardView />}
-
-          {activeView === 'documents' && !loading && <UploadDocumentsView />}
-
-          {activeView === 'reports' && !loading && <ReportAnalysisView />}
-
-          {activeView === 'aichat' && !loading && <LegalChatView />}
-
-          {activeView === 'generator' && !loading && <DefectSheetGeneratorView />}
-
-          {activeView === 'defects' && !loading && <AuditDefectsView />}
-
-          {activeView === 'concurrent' && !loading && <ConcurrentAuditView />}
+          {!loading && (
+            <ViewErrorBoundary key={activeView}>
+              {activeView === 'dashboard' && <DashboardView />}
+              {activeView === 'documents' && <UploadDocumentsView />}
+              {activeView === 'reports' && <ReportAnalysisView />}
+              {activeView === 'aichat' && <LegalChatView />}
+              {activeView === 'generator' && <DefectSheetGeneratorView />}
+              {activeView === 'defects' && <AuditDefectsView />}
+              {activeView === 'concurrent' && <ConcurrentAuditView />}
+            </ViewErrorBoundary>
+          )}
 
         </div>
       </main>
