@@ -240,7 +240,7 @@ export default function DefectSheetGeneratorView() {
                           Cited Provisions
                         </div>
                         <div className="flex flex-wrap gap-1.5">
-                          {defectPreview.citations.map((c, ci) => (
+                          {(defectPreview.citations || []).map((c, ci) => (
                             <span
                               key={ci}
                               className="px-2 py-1 rounded-md text-[10px] bg-white border border-gray-300 text-gray-800 font-mono-techy"
